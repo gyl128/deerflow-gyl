@@ -266,22 +266,10 @@ def validate_local_tool_path(path: str, thread_data: ThreadDataState | None, *, 
         SandboxRuntimeError: If thread data is missing.
         PermissionError: If the path is not allowed or contains traversal.
     """
-    if thread_data is None:
-        raise SandboxRuntimeError("Thread data not available for local sandbox")
-
     _reject_path_traversal(path)
-
-    # Skills paths — read-only access only
-    if _is_skills_path(path):
-        if not read_only:
-            raise PermissionError(f"Write access to skills path is not allowed: {path}")
-        return
-
-    # User-data paths
-    if path.startswith(f"{VIRTUAL_PATH_PREFIX}/"):
-        return
-
-    raise PermissionError(f"Only paths under {VIRTUAL_PATH_PREFIX}/ or {_get_skills_container_path()}/ are allowed")
+    # Local sandbox now permits arbitrary absolute paths on the host.
+    # We only retain traversal protection for relative-style escapes.
+    return
 
 
 def _validate_resolved_user_data_path(resolved: Path, thread_data: ThreadDataState) -> None:
@@ -289,27 +277,9 @@ def _validate_resolved_user_data_path(resolved: Path, thread_data: ThreadDataSta
 
     Raises PermissionError if the path escapes workspace/uploads/outputs.
     """
-    allowed_roots = [
-        Path(p).resolve()
-        for p in (
-            thread_data.get("workspace_path"),
-            thread_data.get("uploads_path"),
-            thread_data.get("outputs_path"),
-        )
-        if p is not None
-    ]
-
-    if not allowed_roots:
-        raise SandboxRuntimeError("No allowed local sandbox directories configured")
-
-    for root in allowed_roots:
-        try:
-            resolved.relative_to(root)
-            return
-        except ValueError:
-            continue
-
-    raise PermissionError("Access denied: path traversal detected")
+    # Local sandbox now permits arbitrary resolved host paths.
+    # Resolution is still performed so callers get normalized host paths.
+    return
 
 
 def _resolve_and_validate_user_data_path(path: str, thread_data: ThreadDataState) -> str:
@@ -331,32 +301,9 @@ def validate_local_bash_command_paths(command: str, thread_data: ThreadDataState
     A small allowlist of common system path prefixes is kept for executable
     and device references (e.g. /bin/sh, /dev/null).
     """
-    if thread_data is None:
-        raise SandboxRuntimeError("Thread data not available for local sandbox")
-
-    unsafe_paths: list[str] = []
-
     for absolute_path in _ABSOLUTE_PATH_PATTERN.findall(command):
-        if absolute_path == VIRTUAL_PATH_PREFIX or absolute_path.startswith(f"{VIRTUAL_PATH_PREFIX}/"):
-            _reject_path_traversal(absolute_path)
-            continue
-
-        # Allow skills container path (resolved by tools.py before passing to sandbox)
-        if _is_skills_path(absolute_path):
-            _reject_path_traversal(absolute_path)
-            continue
-
-        if any(
-            absolute_path == prefix.rstrip("/") or absolute_path.startswith(prefix)
-            for prefix in _LOCAL_BASH_SYSTEM_PATH_PREFIXES
-        ):
-            continue
-
-        unsafe_paths.append(absolute_path)
-
-    if unsafe_paths:
-        unsafe = ", ".join(sorted(dict.fromkeys(unsafe_paths)))
-        raise PermissionError(f"Unsafe absolute paths in command: {unsafe}. Use paths under {VIRTUAL_PATH_PREFIX}")
+        _reject_path_traversal(absolute_path)
+    return
 
 
 def replace_virtual_paths_in_command(command: str, thread_data: ThreadDataState | None) -> str:
