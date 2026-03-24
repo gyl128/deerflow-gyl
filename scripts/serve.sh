@@ -122,7 +122,7 @@ else
 fi
 
 echo "Starting LangGraph server..."
-(cd backend && NO_COLOR=1 uv run langgraph dev --no-browser --allow-blocking $LANGGRAPH_EXTRA_FLAGS > ../logs/langgraph.log 2>&1) &
+(cd backend && NO_COLOR=1 uv run langgraph dev --no-browser --allow-blocking --host 0.0.0.0 $LANGGRAPH_EXTRA_FLAGS > ../logs/langgraph.log 2>&1) &
 ./scripts/wait-for-port.sh 2024 60 "LangGraph" || {
     echo "  See logs/langgraph.log for details"
     tail -20 logs/langgraph.log

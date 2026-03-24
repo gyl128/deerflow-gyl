@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import logging
 import threading
 from typing import Any
@@ -42,6 +43,7 @@ class TelegramChannel(Channel):
 
         try:
             from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters
+            from telegram.request import HTTPXRequest
         except ImportError:
             logger.error("python-telegram-bot is not installed. Install it with: uv add python-telegram-bot")
             return
@@ -55,8 +57,16 @@ class TelegramChannel(Channel):
         self._running = True
         self.bus.subscribe_outbound(self._on_outbound)
 
-        # Build the application
-        app = ApplicationBuilder().token(bot_token).build()
+        # Build the application. Telegram can use a dedicated proxy while
+        # the rest of DeerFlow continues to connect directly.
+        builder = ApplicationBuilder().token(bot_token)
+        proxy_url = self.config.get("proxy_url", "")
+        if proxy_url:
+            request = HTTPXRequest(proxy=proxy_url, http_version="1.1")
+            get_updates_request = HTTPXRequest(proxy=proxy_url, http_version="1.1")
+            builder = builder.request(request).get_updates_request(get_updates_request)
+            logger.info("Telegram channel configured with dedicated proxy: %s", proxy_url)
+        app = builder.build()
 
         # Command handlers
         app.add_handler(CommandHandler("start", self._cmd_start))
@@ -104,28 +114,7 @@ class TelegramChannel(Channel):
         if reply_to:
             kwargs["reply_to_message_id"] = reply_to
 
-        bot = self._application.bot
-        last_exc: Exception | None = None
-        for attempt in range(_max_retries):
-            try:
-                sent = await bot.send_message(**kwargs)
-                self._last_bot_message[msg.chat_id] = sent.message_id
-                return
-            except Exception as exc:
-                last_exc = exc
-                if attempt < _max_retries - 1:
-                    delay = 2**attempt  # 1s, 2s
-                    logger.warning(
-                        "[Telegram] send failed (attempt %d/%d), retrying in %ds: %s",
-                        attempt + 1,
-                        _max_retries,
-                        delay,
-                        exc,
-                    )
-                    await asyncio.sleep(delay)
-
-        logger.error("[Telegram] send failed after %d attempts: %s", _max_retries, last_exc)
-        raise last_exc  # type: ignore[misc]
+        await self._run_on_tg_loop(self._send_message_impl(msg.chat_id, kwargs, _max_retries))
 
     async def send_file(self, msg: OutboundMessage, attachment: ResolvedAttachment) -> bool:
         if not self._application:
@@ -176,15 +165,60 @@ class TelegramChannel(Channel):
         if not self._application:
             return
         try:
-            bot = self._application.bot
-            await bot.send_message(
-                chat_id=int(chat_id),
-                text="Working on it...",
-                reply_to_message_id=reply_to_message_id,
+            await self._run_on_tg_loop(
+                self._send_message_impl(
+                    chat_id,
+                    {
+                        "chat_id": int(chat_id),
+                        "text": "Working on it...",
+                        "reply_to_message_id": reply_to_message_id,
+                    },
+                    3,
+                )
             )
             logger.info("[Telegram] 'Working on it...' reply sent in chat=%s", chat_id)
         except Exception:
             logger.exception("[Telegram] failed to send running reply in chat=%s", chat_id)
+
+    async def _run_on_tg_loop(self, coro):
+        if not self._tg_loop:
+            raise RuntimeError("Telegram event loop is not initialized")
+
+        try:
+            current_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            current_loop = None
+
+        if current_loop is self._tg_loop:
+            return await coro
+
+        future = asyncio.run_coroutine_threadsafe(coro, self._tg_loop)
+        wrapped = asyncio.wrap_future(future)
+        return await wrapped
+
+    async def _send_message_impl(self, chat_key: str, kwargs: dict[str, Any], max_retries: int) -> None:
+        bot = self._application.bot
+        last_exc: Exception | None = None
+        for attempt in range(max_retries):
+            try:
+                sent = await bot.send_message(**kwargs)
+                self._last_bot_message[chat_key] = sent.message_id
+                return
+            except Exception as exc:
+                last_exc = exc
+                if attempt < max_retries - 1:
+                    delay = 2**attempt
+                    logger.warning(
+                        "[Telegram] send failed (attempt %d/%d), retrying in %ds: %s",
+                        attempt + 1,
+                        max_retries,
+                        delay,
+                        exc,
+                    )
+                    await asyncio.sleep(delay)
+
+        logger.error("[Telegram] send failed after %d attempts: %s", max_retries, last_exc)
+        raise last_exc  # type: ignore[misc]
 
     # -- internal ----------------------------------------------------------
     @staticmethod
