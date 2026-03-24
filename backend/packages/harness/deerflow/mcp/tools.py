@@ -1,5 +1,6 @@
 """Load MCP tools using langchain-mcp-adapters."""
 
+import asyncio
 import logging
 
 from langchain_core.tools import BaseTool
@@ -55,12 +56,16 @@ async def get_mcp_tools() -> list[BaseTool]:
 
         client = MultiServerMCPClient(servers_config, tool_interceptors=tool_interceptors, tool_name_prefix=True)
 
-        # Get all tools from all servers
-        tools = await client.get_tools()
+        # Get all tools from all servers. Some third-party "MCP" scripts are not
+        # fully protocol-compliant and can hang forever during initialization.
+        tools = await asyncio.wait_for(client.get_tools(), timeout=10)
         logger.info(f"Successfully loaded {len(tools)} tool(s) from MCP servers")
 
         return tools
 
+    except TimeoutError:
+        logger.error("Timed out while loading MCP tools. One or more configured MCP servers did not complete tool discovery in time.")
+        return []
     except Exception as e:
         logger.error(f"Failed to load MCP tools: {e}", exc_info=True)
         return []

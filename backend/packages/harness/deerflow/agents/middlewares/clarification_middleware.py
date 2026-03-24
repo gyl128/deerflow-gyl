@@ -1,5 +1,6 @@
 """Middleware for intercepting clarification requests and presenting them to the user."""
 
+import json
 from collections.abc import Callable
 from typing import override
 
@@ -43,6 +44,39 @@ class ClarificationMiddleware(AgentMiddleware[ClarificationMiddlewareState]):
         """
         return any("\u4e00" <= char <= "\u9fff" for char in text)
 
+    def _normalize_options(self, options: object) -> list[str]:
+        """Normalize clarification options into a list of display strings.
+
+        Models sometimes emit `options` as a JSON string instead of a parsed list.
+        Handle both forms so the UI does not render one numbered line per character.
+        """
+        if options is None:
+            return []
+
+        normalized: list[object]
+        if isinstance(options, str):
+            text = options.strip()
+            if not text:
+                return []
+            try:
+                parsed = json.loads(text)
+            except Exception:
+                return [text]
+            if not isinstance(parsed, list):
+                return [text]
+            normalized = parsed
+        elif isinstance(options, list):
+            normalized = options
+        else:
+            return [str(options)]
+
+        result: list[str] = []
+        for option in normalized:
+            text = str(option).strip()
+            if text:
+                result.append(text)
+        return result
+
     def _format_clarification_message(self, args: dict) -> str:
         """Format the clarification arguments into a user-friendly message.
 
@@ -55,7 +89,7 @@ class ClarificationMiddleware(AgentMiddleware[ClarificationMiddlewareState]):
         question = args.get("question", "")
         clarification_type = args.get("clarification_type", "missing_info")
         context = args.get("context")
-        options = args.get("options", [])
+        options = self._normalize_options(args.get("options"))
 
         # Type-specific icons
         type_icons = {

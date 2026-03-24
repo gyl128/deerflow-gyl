@@ -7,6 +7,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+PROJECT_ROOT = Path(__file__).resolve().parents[5]
+
 
 class McpOAuthConfig(BaseModel):
     """OAuth configuration for an MCP server (HTTP/SSE transports)."""
@@ -94,24 +96,14 @@ class ExtensionsConfig(BaseModel):
                 raise FileNotFoundError(f"Extensions config file specified by environment variable `DEER_FLOW_EXTENSIONS_CONFIG_PATH` not found at {path}")
             return path
         else:
-            # Check if the extensions_config.json is in the current directory
-            path = Path(os.getcwd()) / "extensions_config.json"
-            if path.exists():
-                return path
-
-            # Check if the extensions_config.json is in the parent directory of CWD
-            path = Path(os.getcwd()).parent / "extensions_config.json"
-            if path.exists():
-                return path
-
-            # Backward compatibility: check for mcp_config.json
-            path = Path(os.getcwd()) / "mcp_config.json"
-            if path.exists():
-                return path
-
-            path = Path(os.getcwd()).parent / "mcp_config.json"
-            if path.exists():
-                return path
+            for path in (
+                PROJECT_ROOT / "extensions_config.json",
+                PROJECT_ROOT.parent / "extensions_config.json",
+                PROJECT_ROOT / "mcp_config.json",
+                PROJECT_ROOT.parent / "mcp_config.json",
+            ):
+                if path.exists():
+                    return path
 
             # Extensions are optional, so return None if not found
             return None

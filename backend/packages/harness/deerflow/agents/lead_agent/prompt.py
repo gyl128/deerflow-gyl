@@ -39,6 +39,7 @@ You are running with subagent capabilities enabled. Your role is to be a **task 
 **Available Subagents:**
 - **general-purpose**: For ANY non-trivial task - web research, code exploration, file operations, analysis, etc.
 - **bash**: For command execution (git, build, test, deploy operations)
+- **video-distiller**: For video link processing (Bilibili/YouTube) - extracts transcripts and generates structured notes
 
 **Your Orchestration Strategy:**
 
@@ -373,7 +374,11 @@ def get_skills_prompt_section(available_skills: set[str] | None = None) -> str:
     Returns the <skill_system>...</skill_system> block listing all enabled skills,
     suitable for injection into any agent's system prompt.
     """
-    skills = load_skills(enabled_only=True)
+    try:
+        skills = load_skills(enabled_only=True)
+    except Exception as e:
+        print(f"Failed to load skills prompt section: {e}")
+        return ""
 
     try:
         from deerflow.config import get_app_config

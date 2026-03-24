@@ -4,6 +4,7 @@ from pathlib import Path
 
 # Virtual path prefix seen by agents inside the sandbox
 VIRTUAL_PATH_PREFIX = "/mnt/user-data"
+PROJECT_ROOT = Path(__file__).resolve().parents[5]
 
 _SAFE_THREAD_ID_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
 
@@ -62,9 +63,9 @@ class Paths:
         if env_home := os.getenv("DEER_FLOW_HOME"):
             return Path(env_home).resolve()
 
-        cwd = Path.cwd()
-        if cwd.name == "backend" or (cwd / "pyproject.toml").exists():
-            return cwd / ".deer-flow"
+        backend_dir = PROJECT_ROOT / "backend"
+        if backend_dir.exists():
+            return backend_dir / ".deer-flow"
 
         return Path.home() / ".deer-flow"
 
