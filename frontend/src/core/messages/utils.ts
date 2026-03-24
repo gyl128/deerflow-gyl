@@ -56,6 +56,10 @@ export function groupMessages<T>(
       continue;
     }
 
+    if (isConversationSummaryMessage(message)) {
+      continue;
+    }
+
     if (message.type === "human") {
       groups.push({ id: message.id, type: "human", messages: [message] });
       continue;
@@ -123,6 +127,19 @@ export function groupMessages<T>(
   return groups
     .map(mapper)
     .filter((result) => result !== undefined && result !== null) as T[];
+}
+
+export function isConversationSummaryMessage(message: Message) {
+  if (message.type !== "human") {
+    return false;
+  }
+
+  const text = extractTextFromMessage(message);
+  if (!text) {
+    return false;
+  }
+
+  return text.startsWith("Here is a summary of the conversation to date:");
 }
 
 export function extractTextFromMessage(message: Message) {

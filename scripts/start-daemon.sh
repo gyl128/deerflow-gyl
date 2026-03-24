@@ -25,8 +25,11 @@ echo "Stopping existing services..."
 pkill -f "langgraph dev" 2>/dev/null || true
 pkill -f "uvicorn app.gateway.app:app" 2>/dev/null || true
 pkill -f "next dev" 2>/dev/null || true
+pkill -f "next build" 2>/dev/null || true
 pkill -f "next start" 2>/dev/null || true
 pkill -f "next-server" 2>/dev/null || true
+pkill -f "pnpm exec next" 2>/dev/null || true
+pkill -f "corepack pnpm" 2>/dev/null || true
 nginx -c "$REPO_ROOT/docker/nginx/nginx.local.conf" -p "$REPO_ROOT" -s quit 2>/dev/null || true
 sleep 1
 pkill -9 nginx 2>/dev/null || true
@@ -56,7 +59,20 @@ echo "  Gateway PID: $GATEWAY_PID"
 # Start frontend
 echo "Starting frontend..."
 cd "$REPO_ROOT/frontend"
-setsid bash -lc "cd '$REPO_ROOT/frontend' && exec pnpm exec next dev --hostname 0.0.0.0 --port 3000" \
+if [ ! -e "$REPO_ROOT/node_modules" ]; then
+    ln -s "$REPO_ROOT/frontend/node_modules" "$REPO_ROOT/node_modules"
+fi
+if command -v pnpm >/dev/null 2>&1; then
+    FRONTEND_PM="pnpm"
+else
+    FRONTEND_PM="corepack pnpm"
+fi
+if [ ! -f "$REPO_ROOT/frontend/.next/BUILD_ID" ]; then
+    echo "  Building frontend for production..."
+    bash -lc "cd '$REPO_ROOT/frontend' && rm -f .next/lock .next/dev/lock 2>/dev/null || true && $FRONTEND_PM exec next build" \
+        > "$LOG_DIR/frontend-build.log" 2>&1
+fi
+setsid bash -lc "cd '$REPO_ROOT/frontend' && rm -f .next/lock .next/dev/lock 2>/dev/null || true && exec $FRONTEND_PM exec next start --hostname 0.0.0.0 --port 3001" \
     > "$LOG_DIR/frontend.log" 2>&1 < /dev/null &
 FRONTEND_PID=$!
 echo $FRONTEND_PID > "$PID_DIR/frontend.pid"
@@ -91,8 +107,8 @@ else
     echo "❌ Gateway:     Failed"
 fi
 
-if ps -p $FRONTEND_PID > /dev/null; then
-    echo "✅ Frontend:    Running (PID: $FRONTEND_PID)"
+if ss -ltn "( sport = :3001 )" | grep -q ":3001"; then
+    echo "✅ Frontend:    Running (port 3001)"
 else
     echo "❌ Frontend:    Failed"
 fi
