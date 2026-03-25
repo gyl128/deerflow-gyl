@@ -26,7 +26,7 @@ docker info >/dev/null 2>&1 || fail "docker daemon is not reachable from WSL"
 mkdir -p "$DEER_FLOW_HOME"
 [ -w "$DEER_FLOW_HOME" ] || fail "Data dir is not writable: $DEER_FLOW_HOME"
 
-for key in BETTER_AUTH_SECRET POSTGRES_DB POSTGRES_USER POSTGRES_PASSWORD POSTGRES_CONNECTION_STRING; do
+for key in BETTER_AUTH_SECRET POSTGRES_DB POSTGRES_USER POSTGRES_PASSWORD POSTGRES_CONNECTION_STRING FEISHU_APP_ID FEISHU_APP_SECRET; do
     if ! grep -q "^${key}=" "$ENV_FILE"; then
         fail "Missing ${key} in $ENV_FILE"
     fi

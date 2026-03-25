@@ -140,7 +140,6 @@ channels:
     webhook_url: ""  # 鐣欑┖浣跨敤杞妯″紡
     
   feishu:
-    enabled: false
+    enabled: true
     app_id: $FEISHU_APP_ID
     app_secret: $FEISHU_APP_SECRET
-

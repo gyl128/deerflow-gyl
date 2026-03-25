@@ -44,6 +44,10 @@ def _default_channel_health() -> dict[str, Any]:
     }
 
 
+def _channel_service_mode() -> str:
+    return os.getenv('DEER_FLOW_CHANNEL_SERVICE_MODE', 'embedded')
+
+
 def _runtime_metadata() -> dict[str, Any]:
     config = get_app_config()
     checkpointer = getattr(config, 'checkpointer', None)
@@ -89,6 +93,22 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     gateway_config = get_gateway_config()
     logger.info('Starting API Gateway on %s:%s', gateway_config.host, gateway_config.port)
     app.state.channel_health = _default_channel_health()
+    channel_service_mode = _channel_service_mode()
+
+    if channel_service_mode != 'embedded':
+        app.state.channel_health = {
+            **_default_channel_health(),
+            'status': 'external' if channel_service_mode == 'external' else 'disabled',
+            'reason': (
+                'channel service is managed by the external channel worker'
+                if channel_service_mode == 'external'
+                else 'channel service startup disabled by configuration'
+            ),
+        }
+        logger.info('Skipping embedded channel startup; mode=%s', channel_service_mode)
+        yield
+        logger.info('Shutting down API Gateway')
+        return
 
     try:
         from app.channels.service import NoChannelsConfiguredError, start_channel_service

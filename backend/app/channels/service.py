@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from typing import Any
 
 from app.channels.manager import ChannelManager
@@ -49,7 +50,7 @@ class ChannelService:
         self._startup_errors: dict[str, str] = {}
 
     @classmethod
-    def from_app_config(cls) -> ChannelService:
+    def from_app_config(cls, selected_channels: Sequence[str] | None = None) -> ChannelService:
         from deerflow.config.app_config import get_app_config
 
         config = get_app_config()
@@ -57,6 +58,16 @@ class ChannelService:
         extra = config.model_extra or {}
         if 'channels' in extra:
             channels_config = extra['channels']
+        if selected_channels:
+            selected = set(selected_channels)
+            filtered_config: dict[str, Any] = {}
+            for key in ('langgraph_url', 'gateway_url', 'session'):
+                if key in channels_config:
+                    filtered_config[key] = channels_config[key]
+            for name in selected:
+                if name in channels_config:
+                    filtered_config[name] = channels_config[name]
+            channels_config = filtered_config
         return cls(channels_config=channels_config)
 
     @property

@@ -27,6 +27,7 @@ wait_http() {
 
 wait_http "$GATEWAY_URL/health"
 wait_http "$GATEWAY_URL/ready"
+docker exec deer-flow-channel-worker sh -lc "curl -fsS http://127.0.0.1:8010/health >/dev/null"
 
 cd "$REPO_ROOT/backend"
 PYTHONPATH=. .venv/bin/python - <<'PY'

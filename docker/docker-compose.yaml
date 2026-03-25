@@ -104,6 +104,7 @@ services:
       DEER_FLOW_HOST_SKILLS_PATH: ${DEER_FLOW_REPO_ROOT:-/root/deerflow/runtime/fork}/skills
       DEER_FLOW_SANDBOX_HOST: host.docker.internal
       DEER_FLOW_RUNTIME_MODE: compose-production
+      DEER_FLOW_CHANNEL_SERVICE_MODE: external
       DEER_FLOW_CONFIG_PATH: /app/backend/config.yaml
       DEER_FLOW_LANGGRAPH_READY_URL: http://langgraph:2024/docs
     env_file:
@@ -125,6 +126,61 @@ services:
       - deer-flow
     restart: unless-stopped
 
+  channel-worker:
+    build:
+      context: ../
+      dockerfile: backend/Dockerfile
+    container_name: deer-flow-channel-worker
+    command: sh -c "cd backend && ./scripts/run-module.sh uvicorn app.channels.worker_app:app --host 0.0.0.0 --port 8010"
+    volumes:
+      - ${DEER_FLOW_CONFIG_PATH:-/root/deerflow/runtime/fork/config.production.yaml}:/app/backend/config.yaml:ro
+      - ${DEER_FLOW_EXTENSIONS_CONFIG_PATH:-/root/deerflow/runtime/fork/extensions_config.production.json}:/app/backend/extensions_config.json:ro
+      - ../skills:/app/skills:ro
+      - ${DEER_FLOW_HOME:-/root/deerflow/runtime/fork/backend/.deer-flow}:/app/backend/.deer-flow
+      - ${DEER_FLOW_DOCKER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
+      - type: bind
+        source: ${HOME:?HOME must be set}/.claude
+        target: /root/.claude
+        read_only: true
+        bind:
+          create_host_path: true
+      - type: bind
+        source: ${HOME:?HOME must be set}/.codex
+        target: /root/.codex
+        read_only: true
+        bind:
+          create_host_path: true
+    working_dir: /app
+    environment:
+      CI: "true"
+      DEER_FLOW_HOME: /app/backend/.deer-flow
+      DEER_FLOW_HOST_BASE_DIR: /app/backend/.deer-flow
+      DEER_FLOW_HOST_SKILLS_PATH: ${DEER_FLOW_REPO_ROOT:-/root/deerflow/runtime/fork}/skills
+      DEER_FLOW_SANDBOX_HOST: host.docker.internal
+      DEER_FLOW_RUNTIME_MODE: compose-production-channel-worker
+      DEER_FLOW_CONFIG_PATH: /app/backend/config.yaml
+      DEER_FLOW_CHANNEL_NAMES: feishu
+    env_file:
+      - ../.env.production
+    depends_on:
+      postgres:
+        condition: service_healthy
+      langgraph:
+        condition: service_healthy
+      gateway:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8010/health >/dev/null"]
+      interval: 15s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    networks:
+      - deer-flow
+    restart: unless-stopped
+
   frontend:
     build:
       context: ../
@@ -137,6 +193,8 @@ services:
       - ../.env.production
     depends_on:
       gateway:
+        condition: service_healthy
+      channel-worker:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
@@ -162,6 +220,8 @@ services:
         condition: service_healthy
       langgraph:
         condition: service_healthy
+      channel-worker:
+        condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:2026/ready >/dev/null"]
       interval: 15s
@@ -178,4 +238,3 @@ volumes:
 networks:
   deer-flow:
     driver: bridge
-

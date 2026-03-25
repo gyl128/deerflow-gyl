@@ -131,3 +131,16 @@ def test_ready_reports_not_ready_when_langgraph_fails(monkeypatch):
     payload = response.json()
     assert payload['status'] == 'not_ready'
     assert payload['checks']['langgraph']['ok'] is False
+
+
+def test_health_reports_external_channels_mode(monkeypatch):
+    _patch_config(monkeypatch)
+    monkeypatch.setenv('DEER_FLOW_CHANNEL_SERVICE_MODE', 'external')
+
+    with TestClient(gateway_app_module.create_app()) as client:
+        response = client.get('/health')
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload['channels']['status'] == 'external'
+    assert 'external channel worker' in payload['channels']['reason']
