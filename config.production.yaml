@@ -129,8 +129,8 @@ checkpointer:
   connection_string: $POSTGRES_CONNECTION_STRING
 
 channels:
-  langgraph_url: http://localhost:2024
-  gateway_url: http://localhost:8001
+  langgraph_url: http://langgraph:2024
+  gateway_url: http://gateway:8001
   
   # Telegram Bot Configuration
   telegram:

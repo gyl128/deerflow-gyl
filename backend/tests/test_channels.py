@@ -373,6 +373,28 @@ class TestExtractResponseText:
         assert _extract_response_text(result) == ""
 
 
+class TestFriendlyRunErrorMessage:
+    def test_connection_error_becomes_user_friendly_message(self):
+        from app.channels.manager import _friendly_run_error_message
+
+        result = {
+            "tasks": [
+                {"name": "model", "error": "APIConnectionError('Connection error.')"},
+            ]
+        }
+        assert _friendly_run_error_message(result) == "The model service connection failed while processing your request. Please try again."
+
+    def test_non_connection_error_is_reported(self):
+        from app.channels.manager import _friendly_run_error_message
+
+        result = {
+            "tasks": [
+                {"name": "model", "error": "ValueError('boom')"},
+            ]
+        }
+        assert _friendly_run_error_message(result) == "The agent run failed: ValueError('boom')"
+
+
 # ---------------------------------------------------------------------------
 # ChannelManager tests
 # ---------------------------------------------------------------------------
@@ -386,7 +408,8 @@ def _make_mock_langgraph_client(thread_id="test-thread-123", run_result=None):
     mock_client.threads.create = AsyncMock(return_value={"thread_id": thread_id})
 
     # threads.get() returns thread info (succeeds by default)
-    mock_client.threads.get = AsyncMock(return_value={"thread_id": thread_id})
+    mock_client.threads.get = AsyncMock(return_value={"thread_id": thread_id, "status": "idle"})
+    mock_client.threads.get_state = AsyncMock(return_value={})
 
     # runs.wait() returns the final state with messages
     if run_result is None:
@@ -397,6 +420,8 @@ def _make_mock_langgraph_client(thread_id="test-thread-123", run_result=None):
             ]
         }
     mock_client.runs.wait = AsyncMock(return_value=run_result)
+    mock_client.runs.list = AsyncMock(return_value=[])
+    mock_client.runs.cancel = AsyncMock(return_value=None)
 
     return mock_client
 
@@ -455,6 +480,85 @@ class TestChannelManager:
 
             assert len(outbound_received) == 1
             assert outbound_received[0].text == "Hello from agent!"
+
+        _run(go())
+
+    def test_handle_chat_recovers_stuck_thread_with_task_error(self):
+        from app.channels.manager import ChannelManager
+
+        async def go():
+            bus = MessageBus()
+            store = ChannelStore(path=Path(tempfile.mkdtemp()) / "store.json")
+            store.set_thread_id("test", "chat1", "stuck-thread", user_id="user1")
+            manager = ChannelManager(bus=bus, store=store)
+
+            outbound_received = []
+
+            async def capture_outbound(msg):
+                outbound_received.append(msg)
+
+            bus.subscribe_outbound(capture_outbound)
+
+            mock_client = _make_mock_langgraph_client(thread_id="stuck-thread")
+            mock_client.threads.get = AsyncMock(return_value={"thread_id": "stuck-thread", "status": "busy"})
+            mock_client.threads.get_state = AsyncMock(
+                return_value={
+                    "tasks": [
+                        {"name": "model", "error": "APIConnectionError('Connection error.')"},
+                    ]
+                }
+            )
+            mock_client.runs.list = AsyncMock(
+                return_value=[
+                    {"run_id": "running-1", "status": "running", "created_at": "2026-03-25T04:41:47+00:00"},
+                    {"run_id": "pending-1", "status": "pending", "created_at": "2026-03-25T04:46:46+00:00"},
+                ]
+            )
+            manager._client = mock_client
+
+            await manager.start()
+            await bus.publish_inbound(InboundMessage(channel_name="test", chat_id="chat1", user_id="user1", text="hi"))
+            await _wait_for(lambda: len(outbound_received) >= 1)
+            await manager.stop()
+
+            assert mock_client.runs.cancel.await_count == 2
+            cancelled_ids = [call.args[1] for call in mock_client.runs.cancel.await_args_list]
+            assert cancelled_ids == ["running-1", "pending-1"]
+            assert outbound_received[0].text == "Hello from agent!"
+
+        _run(go())
+
+    def test_handle_chat_returns_user_visible_run_error(self):
+        from app.channels.manager import ChannelManager
+
+        async def go():
+            bus = MessageBus()
+            store = ChannelStore(path=Path(tempfile.mkdtemp()) / "store.json")
+            manager = ChannelManager(bus=bus, store=store)
+
+            run_result = {
+                "messages": [
+                    {"type": "human", "content": "hi"},
+                ],
+                "tasks": [
+                    {"name": "model", "error": "APIConnectionError('Connection error.')"},
+                ],
+            }
+            mock_client = _make_mock_langgraph_client(run_result=run_result)
+            manager._client = mock_client
+
+            outbound_received = []
+
+            async def capture_outbound(msg):
+                outbound_received.append(msg)
+
+            bus.subscribe_outbound(capture_outbound)
+            await manager.start()
+            await bus.publish_inbound(InboundMessage(channel_name="test", chat_id="chat1", user_id="user1", text="hi"))
+            await _wait_for(lambda: len(outbound_received) >= 1)
+            await manager.stop()
+
+            assert outbound_received[0].text == "The model service connection failed while processing your request. Please try again."
 
         _run(go())
 
@@ -629,6 +733,72 @@ class TestChannelManager:
             assert [msg.text for msg in outbound_received] == ["Hello", "Hello world", "Hello world"]
             assert [msg.is_final for msg in outbound_received] == [False, False, True]
             assert all(msg.thread_ts == "om-source-1" for msg in outbound_received)
+
+        _run(go())
+
+    def test_handle_feishu_chat_accepts_messages_event_alias(self, monkeypatch):
+        from app.channels.manager import ChannelManager
+
+        monkeypatch.setattr("app.channels.manager.STREAM_UPDATE_MIN_INTERVAL_SECONDS", 0.0)
+
+        async def go():
+            bus = MessageBus()
+            store = ChannelStore(path=Path(tempfile.mkdtemp()) / "store.json")
+            manager = ChannelManager(bus=bus, store=store)
+
+            outbound_received = []
+
+            async def capture_outbound(msg):
+                outbound_received.append(msg)
+
+            bus.subscribe_outbound(capture_outbound)
+
+            stream_events = [
+                _make_stream_part(
+                    "messages",
+                    [
+                        {"id": "ai-1", "content": "Alias", "type": "AIMessageChunk"},
+                        {"langgraph_node": "agent"},
+                    ],
+                ),
+                _make_stream_part(
+                    "messages",
+                    [
+                        {"id": "ai-1", "content": " event", "type": "AIMessageChunk"},
+                        {"langgraph_node": "agent"},
+                    ],
+                ),
+                _make_stream_part(
+                    "values",
+                    {
+                        "messages": [
+                            {"type": "human", "content": "hi"},
+                            {"type": "ai", "content": "Alias event"},
+                        ],
+                        "artifacts": [],
+                    },
+                ),
+            ]
+
+            mock_client = _make_mock_langgraph_client()
+            mock_client.runs.stream = MagicMock(return_value=_make_async_iterator(stream_events))
+            manager._client = mock_client
+
+            await manager.start()
+
+            inbound = InboundMessage(
+                channel_name="feishu",
+                chat_id="chat1",
+                user_id="user1",
+                text="hi",
+                thread_ts="om-source-1",
+            )
+            await bus.publish_inbound(inbound)
+            await _wait_for(lambda: len(outbound_received) >= 3)
+            await manager.stop()
+
+            assert [msg.text for msg in outbound_received] == ["Alias", "Alias event", "Alias event"]
+            assert [msg.is_final for msg in outbound_received] == [False, False, True]
 
         _run(go())
 

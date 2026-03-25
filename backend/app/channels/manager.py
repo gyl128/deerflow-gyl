@@ -7,6 +7,7 @@ import logging
 import mimetypes
 import time
 from collections.abc import Mapping
+from datetime import datetime, timezone
 from typing import Any
 
 from app.channels.message_bus import InboundMessage, InboundMessageType, MessageBus, OutboundMessage, ResolvedAttachment
@@ -25,6 +26,7 @@ DEFAULT_RUN_CONTEXT: dict[str, Any] = {
     "subagent_enabled": False,
 }
 STREAM_UPDATE_MIN_INTERVAL_SECONDS = 0.35
+STALE_RUN_TIMEOUT_SECONDS = 120
 
 CHANNEL_CAPABILITIES = {
     "feishu": {"supports_streaming": True},
@@ -98,6 +100,45 @@ def _extract_response_text(result: dict | list) -> str:
                 if text:
                     return text
     return ""
+
+
+def _extract_task_error(result: Any) -> str | None:
+    """Extract a terminal task error string from a LangGraph state/result payload."""
+    if not isinstance(result, Mapping):
+        return None
+
+    tasks = result.get("tasks")
+    if not isinstance(tasks, list):
+        return None
+
+    for task in tasks:
+        if not isinstance(task, Mapping):
+            continue
+        error = task.get("error")
+        if isinstance(error, str) and error:
+            return error
+    return None
+
+
+def _friendly_run_error_message(result: Any) -> str | None:
+    """Convert a run/task error into a user-visible fallback message."""
+    error = _extract_task_error(result)
+    if not error:
+        return None
+
+    lowered = error.lower()
+    if "apiconnectionerror" in lowered or "connection error" in lowered:
+        return "The model service connection failed while processing your request. Please try again."
+    return f"The agent run failed: {error}"
+
+
+def _parse_created_at(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
 
 
 def _extract_text_content(content: Any) -> str:
@@ -391,6 +432,65 @@ class ChannelManager:
             self._client = get_client(url=self._langgraph_url)
         return self._client
 
+    async def _recover_stuck_thread_runs(self, client, thread_id: str) -> None:
+        """Clear errored/stale runs that still leave the thread marked busy."""
+        try:
+            thread = await client.threads.get(thread_id)
+        except Exception:
+            logger.exception("[Manager] failed to inspect thread before recovery: thread_id=%s", thread_id)
+            return
+
+        if not isinstance(thread, Mapping) or thread.get("status") != "busy":
+            return
+
+        state: dict[str, Any] | None = None
+        try:
+            raw_state = await client.threads.get_state(thread_id)
+            state = raw_state if isinstance(raw_state, dict) else None
+        except Exception:
+            logger.exception("[Manager] failed to inspect thread state before recovery: thread_id=%s", thread_id)
+
+        state_error = _extract_task_error(state)
+        now = datetime.now(timezone.utc)
+
+        try:
+            runs = await client.runs.list(thread_id=thread_id, limit=20)
+        except Exception:
+            logger.exception("[Manager] failed to list runs before recovery: thread_id=%s", thread_id)
+            return
+
+        stale_run_ids: list[str] = []
+        for run in runs:
+            if not isinstance(run, Mapping):
+                continue
+
+            run_id = run.get("run_id")
+            status = run.get("status")
+            if not isinstance(run_id, str) or status not in {"running", "pending"}:
+                continue
+
+            created_at = _parse_created_at(run.get("created_at"))
+            age_seconds = (now - created_at).total_seconds() if created_at else None
+            is_stale = age_seconds is not None and age_seconds >= STALE_RUN_TIMEOUT_SECONDS
+
+            if state_error or is_stale:
+                stale_run_ids.append(run_id)
+
+        if not stale_run_ids:
+            return
+
+        logger.warning(
+            "[Manager] recovering stuck thread runs: thread_id=%s, run_ids=%s, state_error=%s",
+            thread_id,
+            stale_run_ids,
+            state_error,
+        )
+        for run_id in stale_run_ids:
+            try:
+                await client.runs.cancel(thread_id, run_id, wait=True, action="interrupt")
+            except Exception:
+                logger.exception("[Manager] failed to cancel stale run: thread_id=%s run_id=%s", thread_id, run_id)
+
     # -- lifecycle ---------------------------------------------------------
 
     async def start(self) -> None:
@@ -489,6 +589,8 @@ class ChannelManager:
         # No existing thread found — create a new one
         if thread_id is None:
             thread_id = await self._create_thread(client, msg)
+        else:
+            await self._recover_stuck_thread_runs(client, thread_id)
 
         assistant_id, run_config, run_context = self._resolve_run_params(msg, thread_id)
         if extra_context:
@@ -528,6 +630,8 @@ class ChannelManager:
         if not response_text:
             if attachments:
                 response_text = _format_artifact_text([a.virtual_path for a in attachments])
+            elif (error_text := _friendly_run_error_message(result)) is not None:
+                response_text = error_text
             else:
                 response_text = "(No response from agent)"
 
@@ -574,7 +678,7 @@ class ChannelManager:
                 event = getattr(chunk, "event", "")
                 data = getattr(chunk, "data", None)
 
-                if event == "messages-tuple":
+                if event in {"messages-tuple", "messages"}:
                     accumulated_text, current_message_id = _accumulate_stream_text(streamed_buffers, current_message_id, data)
                     if accumulated_text:
                         latest_text = accumulated_text
@@ -615,6 +719,8 @@ class ChannelManager:
             if not response_text:
                 if attachments:
                     response_text = _format_artifact_text([attachment.virtual_path for attachment in attachments])
+                elif (error_text := _friendly_run_error_message(result)) is not None:
+                    response_text = error_text
                 elif stream_error:
                     response_text = "An error occurred while processing your request. Please try again."
                 else:
