@@ -1,6 +1,6 @@
 # DeerFlow - Unified Development Environment
 
-.PHONY: help config config-upgrade check install dev dev-daemon start stop up down clean docker-init docker-start docker-stop docker-logs docker-logs-frontend docker-logs-gateway
+.PHONY: help config config-upgrade check install dev dev-daemon start stop up down clean docker-init docker-start docker-stop docker-logs docker-logs-frontend docker-logs-gateway preflight-production smoke-production
 
 PYTHON ?= python
 
@@ -18,7 +18,9 @@ help:
 	@echo "  make clean           - Clean up processes and temporary files"
 	@echo ""
 	@echo "Docker Production Commands:"
+	@echo "  make preflight-production - Validate WSL production prerequisites"
 	@echo "  make up              - Build and start production Docker services (localhost:2026)"
+	@echo "  make smoke-production - Run production smoke test against compose stack"
 	@echo "  make down            - Stop and remove production Docker containers"
 	@echo ""
 	@echo "Docker Development Commands:"
@@ -142,9 +144,17 @@ docker-logs-gateway:
 # Production Docker Commands
 # ==========================================
 
+# Validate production prerequisites
+preflight-production:
+	@./scripts/preflight-production.sh
+
 # Build and start production services
 up:
 	@./scripts/deploy.sh
+
+# Run smoke test against production services
+smoke-production:
+	@./scripts/smoke-production.sh
 
 # Stop and remove production containers
 down:

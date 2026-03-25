@@ -1,10 +1,13 @@
 import logging
+import os
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from typing import Any
 
+import httpx
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from app.gateway.config import get_gateway_config
 from app.gateway.routers import (
@@ -41,17 +44,50 @@ def _default_channel_health() -> dict[str, Any]:
     }
 
 
+def _runtime_metadata() -> dict[str, Any]:
+    config = get_app_config()
+    checkpointer = getattr(config, 'checkpointer', None)
+    return {
+        'runtime_mode': os.getenv('DEER_FLOW_RUNTIME_MODE', 'unknown'),
+        'config_path': os.getenv('DEER_FLOW_CONFIG_PATH') or 'config.yaml',
+        'langgraph_ready_url': os.getenv('DEER_FLOW_LANGGRAPH_READY_URL', 'http://127.0.0.1:2024/docs'),
+        'checkpointer': {
+            'type': getattr(checkpointer, 'type', None),
+            'configured': checkpointer is not None,
+        },
+    }
+
+
+async def _probe_langgraph() -> tuple[bool, str | None]:
+    url = os.getenv('DEER_FLOW_LANGGRAPH_READY_URL', 'http://127.0.0.1:2024/docs')
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            response = await client.get(url)
+        if response.is_success:
+            return True, None
+        return False, f'langgraph probe returned {response.status_code}'
+    except Exception as exc:
+        return False, f'langgraph probe failed: {exc}'
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     try:
-        get_app_config()
+        config = get_app_config()
         logger.info('Configuration loaded successfully')
+        logger.info(
+            'Gateway runtime metadata: %s',
+            {
+                **_runtime_metadata(),
+                'channels_defined': sorted((config.model_extra or {}).get('channels', {}).keys()),
+            },
+        )
     except Exception as e:
         error_msg = f'Failed to load configuration during gateway startup: {e}'
         logger.exception(error_msg)
         raise RuntimeError(error_msg) from e
-    config = get_gateway_config()
-    logger.info('Starting API Gateway on %s:%s', config.host, config.port)
+    gateway_config = get_gateway_config()
+    logger.info('Starting API Gateway on %s:%s', gateway_config.host, gateway_config.port)
     app.state.channel_health = _default_channel_health()
 
     try:
@@ -147,7 +183,32 @@ API Gateway for DeerFlow - A LangGraph-based AI agent backend with sandbox execu
             'status': 'healthy',
             'service': 'deer-flow-gateway',
             'channels': app.state.channel_health,
+            'runtime': _runtime_metadata(),
         }
+
+    @app.get('/ready', tags=['health'])
+    async def ready_check() -> JSONResponse:
+        runtime = _runtime_metadata()
+        issues: list[str] = []
+        if not runtime['checkpointer']['configured']:
+            issues.append('checkpointer is not configured')
+        langgraph_ok, langgraph_error = await _probe_langgraph()
+        if not langgraph_ok and langgraph_error:
+            issues.append(langgraph_error)
+        payload = {
+            'status': 'ready' if not issues else 'not_ready',
+            'service': 'deer-flow-gateway',
+            'channels': app.state.channel_health,
+            'runtime': runtime,
+            'checks': {
+                'langgraph': {'ok': langgraph_ok, 'error': langgraph_error},
+                'checkpointer': {
+                    'ok': runtime['checkpointer']['configured'],
+                    'error': None if runtime['checkpointer']['configured'] else 'checkpointer missing',
+                },
+            },
+        }
+        return JSONResponse(status_code=200 if not issues else 503, content=payload)
 
     return app
 

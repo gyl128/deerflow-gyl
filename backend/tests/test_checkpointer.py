@@ -7,6 +7,7 @@ import pytest
 
 import deerflow.config.app_config as app_config_module
 from deerflow.agents.checkpointer import get_checkpointer, reset_checkpointer
+from deerflow.agents.checkpointer.capabilities import SyncCapabilityAwareSaver
 from deerflow.config.checkpointer_config import (
     CheckpointerConfig,
     get_checkpointer_config,
@@ -68,6 +69,10 @@ class TestCheckpointerConfig:
             load_checkpointer_config_from_dict({"type": "unknown"})
 
 
+def _unwrap_checkpointer(cp):
+    return cp._inner if isinstance(cp, SyncCapabilityAwareSaver) else cp
+
+
 # ---------------------------------------------------------------------------
 # Factory tests
 # ---------------------------------------------------------------------------
@@ -81,14 +86,16 @@ class TestGetCheckpointer:
         with patch("deerflow.agents.checkpointer.provider.get_app_config", side_effect=FileNotFoundError):
             cp = get_checkpointer()
         assert cp is not None
-        assert isinstance(cp, InMemorySaver)
+        assert isinstance(cp, SyncCapabilityAwareSaver)
+        assert isinstance(_unwrap_checkpointer(cp), InMemorySaver)
 
     def test_memory_returns_in_memory_saver(self):
         load_checkpointer_config_from_dict({"type": "memory"})
         from langgraph.checkpoint.memory import InMemorySaver
 
         cp = get_checkpointer()
-        assert isinstance(cp, InMemorySaver)
+        assert isinstance(cp, SyncCapabilityAwareSaver)
+        assert isinstance(_unwrap_checkpointer(cp), InMemorySaver)
 
     def test_memory_singleton(self):
         load_checkpointer_config_from_dict({"type": "memory"})
@@ -146,7 +153,8 @@ class TestGetCheckpointer:
             reset_checkpointer()
             cp = get_checkpointer()
 
-        assert cp is mock_saver_instance
+        assert isinstance(cp, SyncCapabilityAwareSaver)
+        assert _unwrap_checkpointer(cp) is mock_saver_instance
         mock_saver_cls.from_conn_string.assert_called_once()
         mock_saver_instance.setup.assert_called_once()
 
@@ -169,7 +177,8 @@ class TestGetCheckpointer:
             reset_checkpointer()
             cp = get_checkpointer()
 
-        assert cp is mock_saver_instance
+        assert isinstance(cp, SyncCapabilityAwareSaver)
+        assert _unwrap_checkpointer(cp) is mock_saver_instance
         mock_saver_cls.from_conn_string.assert_called_once_with("postgresql://localhost/db")
         mock_saver_instance.setup.assert_called_once()
 
@@ -228,7 +237,8 @@ class TestClientCheckpointerFallback:
             client._ensure_agent(config)
 
         assert "checkpointer" in captured_kwargs
-        assert isinstance(captured_kwargs["checkpointer"], InMemorySaver)
+        assert isinstance(captured_kwargs["checkpointer"], SyncCapabilityAwareSaver)
+        assert isinstance(_unwrap_checkpointer(captured_kwargs["checkpointer"]), InMemorySaver)
 
     def test_client_explicit_checkpointer_takes_precedence(self):
         """An explicitly provided checkpointer is used even when config checkpointer is set."""

@@ -1,0 +1,146 @@
+# Configuration for the DeerFlow application
+config_version: 3
+
+# ============================================================================
+# Models Configuration
+# ============================================================================
+models:
+  # QwenPool local model proxy (OpenAI-compatible)
+  # Using openai: prefix to specify model provide
+  - name: qwen-code
+    display_name: Qwen Coder (Local)
+    use: langchain_openai:ChatOpenAI
+    model: openai:coder-model
+    api_key: sk-dummy
+    base_url: http://host.docker.internal:8787/v1
+    max_tokens: 4096
+    temperature: 0.7
+    supports_thinking: true
+    supports_vision: false
+
+# ============================================================================
+# Tool Groups Configuration
+# ============================================================================
+tool_groups:
+  - name: web
+  - name: file:read
+  - name: file:write
+  - name: bash
+
+# ============================================================================
+# Tools Configuration
+# ============================================================================
+tools:
+  - name: web_search
+    group: web
+    use: deerflow.community.tavily.tools:web_search_tool
+    max_results: 5
+
+  - name: web_fetch
+    group: web
+    use: deerflow.community.jina_ai.tools:web_fetch_tool
+    timeout: 10
+
+  - name: image_search
+    group: web
+    use: deerflow.community.image_search.tools:image_search_tool
+    max_results: 5
+
+  - name: ls
+    group: file:read
+    use: deerflow.sandbox.tools:ls_tool
+
+  - name: read_file
+    group: file:read
+    use: deerflow.sandbox.tools:read_file_tool
+
+  - name: write_file
+    group: file:write
+    use: deerflow.sandbox.tools:write_file_tool
+
+  - name: str_replace
+    group: file:write
+    use: deerflow.sandbox.tools:str_replace_tool
+
+  - name: bash
+    group: bash
+    use: deerflow.sandbox.tools:bash_tool
+
+# ============================================================================
+# Tool Search Configuration
+# ============================================================================
+tool_search:
+  enabled: false
+
+# ============================================================================
+# Sandbox Configuration
+# ============================================================================
+sandbox:
+  use: deerflow.sandbox.local:LocalSandboxProvide
+
+# ============================================================================
+# Skills Configuration
+# ============================================================================
+skills:
+  container_path: /mnt/skills
+
+# ============================================================================
+# Title Generation Configuration
+# ============================================================================
+title:
+  enabled: true
+  max_words: 6
+  max_chars: 60
+  model_name: qwen-code
+
+# ============================================================================
+# Summarization Configuration
+# ============================================================================
+summarization:
+  enabled: false
+  model_name: qwen-code
+  trigger:
+    - type: tokens
+      value: 15564
+  keep:
+    type: messages
+    value: 10
+  trim_tokens_to_summarize: 15564
+  summary_prompt: null
+
+# ============================================================================
+# Memory Configuration
+# ============================================================================
+memory:
+  enabled: true
+  storage_path: memory.json
+  debounce_seconds: 30
+  model_name: qwen-code
+  max_facts: 100
+  fact_confidence_threshold: 0.7
+  injection_enabled: true
+  max_injection_tokens: 2000
+
+# ============================================================================
+# Checkpointer Configuration
+# ============================================================================
+checkpointer:
+  type: postgres
+  connection_string: $POSTGRES_CONNECTION_STRING
+
+channels:
+  langgraph_url: http://localhost:2024
+  gateway_url: http://localhost:8001
+  
+  # Telegram Bot Configuration
+  telegram:
+    enabled: false
+    bot_token: $TELEGRAM_BOT_TOKEN
+    proxy_url: $TELEGRAM_PROXY_URL
+    webhook_url: ""  # 鐣欑┖浣跨敤杞妯″紡
+    
+  feishu:
+    enabled: false
+    app_id: $FEISHU_APP_ID
+    app_secret: $FEISHU_APP_SECRET
+

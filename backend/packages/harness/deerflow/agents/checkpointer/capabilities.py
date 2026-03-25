@@ -48,7 +48,7 @@ def _detect_backend(inner: Any) -> str:
 
 def _build_capability_flags(inner: Any) -> CapabilityFlags:
     backend = _detect_backend(inner)
-    if backend in {'sqlite', 'memory'}:
+    if backend in {'sqlite', 'memory', 'postgres'}:
         return CapabilityFlags(
             backend=backend,
             delete_for_runs=True,
@@ -192,6 +192,9 @@ class AsyncCapabilityAwareSaver(BaseCheckpointSaver):
         if self.capability_flags.backend == 'memory':
             await self._memory_delete_for_runs(run_ids)
             return
+        if self.capability_flags.backend == 'postgres':
+            await self._postgres_delete_for_runs(run_ids)
+            return
         raise RuntimeError(
             f"Checkpointer backend '{self.capability_flags.backend}' does not support adelete_for_runs. "
             f"capabilities={self.capability_flags.as_dict()}"
@@ -212,6 +215,9 @@ class AsyncCapabilityAwareSaver(BaseCheckpointSaver):
             return
         if self.capability_flags.backend == 'memory':
             await self._memory_prune_keep_latest([str(thread_id) for thread_id in thread_ids])
+            return
+        if self.capability_flags.backend == 'postgres':
+            await self._postgres_prune_keep_latest([str(thread_id) for thread_id in thread_ids])
             return
         raise RuntimeError(
             f"Checkpointer backend '{self.capability_flags.backend}' does not support aprune(keep_latest). "
@@ -315,6 +321,163 @@ class AsyncCapabilityAwareSaver(BaseCheckpointSaver):
                     checkpoint, metadata, _parent = checkpoints[keep_id]
                     checkpoints[keep_id] = (checkpoint, metadata, None)
 
+    async def _postgres_delete_for_runs(self, run_ids: Sequence[str]) -> None:
+        if not run_ids:
+            return
+        async with self._inner._cursor(pipeline=True) as cur:
+            await cur.execute(
+                '''
+                WITH doomed AS (
+                    SELECT thread_id, checkpoint_ns, checkpoint_id
+                    FROM checkpoints
+                    WHERE metadata ->> 'run_id' = ANY(%s)
+                )
+                UPDATE checkpoints AS checkpoints_to_update
+                SET parent_checkpoint_id = NULL
+                FROM doomed
+                WHERE checkpoints_to_update.thread_id = doomed.thread_id
+                  AND checkpoints_to_update.checkpoint_ns = doomed.checkpoint_ns
+                  AND checkpoints_to_update.parent_checkpoint_id = doomed.checkpoint_id
+                ''',
+                (list(run_ids),),
+            )
+            await cur.execute(
+                '''
+                DELETE FROM checkpoint_writes AS writes
+                USING (
+                    SELECT thread_id, checkpoint_ns, checkpoint_id
+                    FROM checkpoints
+                    WHERE metadata ->> 'run_id' = ANY(%s)
+                ) AS doomed
+                WHERE writes.thread_id = doomed.thread_id
+                  AND writes.checkpoint_ns = doomed.checkpoint_ns
+                  AND writes.checkpoint_id = doomed.checkpoint_id
+                ''',
+                (list(run_ids),),
+            )
+            await cur.execute(
+                '''
+                DELETE FROM checkpoints AS checkpoints_to_delete
+                USING (
+                    SELECT thread_id, checkpoint_ns, checkpoint_id
+                    FROM checkpoints
+                    WHERE metadata ->> 'run_id' = ANY(%s)
+                ) AS doomed
+                WHERE checkpoints_to_delete.thread_id = doomed.thread_id
+                  AND checkpoints_to_delete.checkpoint_ns = doomed.checkpoint_ns
+                  AND checkpoints_to_delete.checkpoint_id = doomed.checkpoint_id
+                ''',
+                (list(run_ids),),
+            )
+        await self._postgres_delete_orphan_blobs(None)
+
+    async def _postgres_prune_keep_latest(self, thread_ids: Sequence[str]) -> None:
+        if not thread_ids:
+            return
+        async with self._inner._cursor(pipeline=True) as cur:
+            await cur.execute(
+                '''
+                WITH ranked AS (
+                    SELECT
+                        thread_id,
+                        checkpoint_ns,
+                        checkpoint_id,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY thread_id, checkpoint_ns
+                            ORDER BY checkpoint_id DESC
+                        ) AS row_num
+                    FROM checkpoints
+                    WHERE thread_id = ANY(%s)
+                )
+                UPDATE checkpoints AS checkpoints_to_update
+                SET parent_checkpoint_id = NULL
+                FROM ranked
+                WHERE checkpoints_to_update.thread_id = ranked.thread_id
+                  AND checkpoints_to_update.checkpoint_ns = ranked.checkpoint_ns
+                  AND checkpoints_to_update.checkpoint_id = ranked.checkpoint_id
+                  AND ranked.row_num = 1
+                ''',
+                (list(thread_ids),),
+            )
+            await cur.execute(
+                '''
+                WITH ranked AS (
+                    SELECT
+                        thread_id,
+                        checkpoint_ns,
+                        checkpoint_id,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY thread_id, checkpoint_ns
+                            ORDER BY checkpoint_id DESC
+                        ) AS row_num
+                    FROM checkpoints
+                    WHERE thread_id = ANY(%s)
+                )
+                DELETE FROM checkpoint_writes AS writes
+                USING ranked
+                WHERE writes.thread_id = ranked.thread_id
+                  AND writes.checkpoint_ns = ranked.checkpoint_ns
+                  AND writes.checkpoint_id = ranked.checkpoint_id
+                  AND ranked.row_num > 1
+                ''',
+                (list(thread_ids),),
+            )
+            await cur.execute(
+                '''
+                WITH ranked AS (
+                    SELECT
+                        thread_id,
+                        checkpoint_ns,
+                        checkpoint_id,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY thread_id, checkpoint_ns
+                            ORDER BY checkpoint_id DESC
+                        ) AS row_num
+                    FROM checkpoints
+                    WHERE thread_id = ANY(%s)
+                )
+                DELETE FROM checkpoints AS checkpoints_to_delete
+                USING ranked
+                WHERE checkpoints_to_delete.thread_id = ranked.thread_id
+                  AND checkpoints_to_delete.checkpoint_ns = ranked.checkpoint_ns
+                  AND checkpoints_to_delete.checkpoint_id = ranked.checkpoint_id
+                  AND ranked.row_num > 1
+                ''',
+                (list(thread_ids),),
+            )
+        await self._postgres_delete_orphan_blobs(list(thread_ids))
+
+    async def _postgres_delete_orphan_blobs(self, thread_ids: Sequence[str] | None) -> None:
+        async with self._inner._cursor(pipeline=True) as cur:
+            if thread_ids:
+                await cur.execute(
+                    '''
+                    DELETE FROM checkpoint_blobs AS blobs
+                    WHERE blobs.thread_id = ANY(%s)
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM checkpoints
+                          WHERE checkpoints.thread_id = blobs.thread_id
+                            AND checkpoints.checkpoint_ns = blobs.checkpoint_ns
+                            AND checkpoints.checkpoint -> 'channel_versions' ->> blobs.channel = blobs.version
+                      )
+                    ''',
+                    (list(thread_ids),),
+                )
+                return
+            await cur.execute(
+                '''
+                DELETE FROM checkpoint_blobs AS blobs
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM checkpoints
+                    WHERE checkpoints.thread_id = blobs.thread_id
+                      AND checkpoints.checkpoint_ns = blobs.checkpoint_ns
+                      AND checkpoints.checkpoint -> 'channel_versions' ->> blobs.channel = blobs.version
+                )
+                '''
+            )
+
 
 class SyncCapabilityAwareSaver(BaseCheckpointSaver):
     def __init__(self, inner: BaseCheckpointSaver) -> None:
@@ -372,6 +535,9 @@ class SyncCapabilityAwareSaver(BaseCheckpointSaver):
         if self.capability_flags.backend == 'memory':
             self._memory_delete_for_runs(run_ids)
             return
+        if self.capability_flags.backend == 'postgres':
+            self._postgres_delete_for_runs(run_ids)
+            return
         raise RuntimeError(
             f"Checkpointer backend '{self.capability_flags.backend}' does not support delete_for_runs. "
             f"capabilities={self.capability_flags.as_dict()}"
@@ -392,6 +558,9 @@ class SyncCapabilityAwareSaver(BaseCheckpointSaver):
             return
         if self.capability_flags.backend == 'memory':
             self._memory_prune_keep_latest([str(thread_id) for thread_id in thread_ids])
+            return
+        if self.capability_flags.backend == 'postgres':
+            self._postgres_prune_keep_latest([str(thread_id) for thread_id in thread_ids])
             return
         raise RuntimeError(
             f"Checkpointer backend '{self.capability_flags.backend}' does not support prune(keep_latest). "
@@ -491,3 +660,161 @@ class SyncCapabilityAwareSaver(BaseCheckpointSaver):
                 if keep_id is not None:
                     checkpoint, metadata, _parent = checkpoints[keep_id]
                     checkpoints[keep_id] = (checkpoint, metadata, None)
+
+    def _postgres_delete_for_runs(self, run_ids: Sequence[str]) -> None:
+        if not run_ids:
+            return
+        with self._inner._cursor(pipeline=True) as cur:
+            cur.execute(
+                '''
+                WITH doomed AS (
+                    SELECT thread_id, checkpoint_ns, checkpoint_id
+                    FROM checkpoints
+                    WHERE metadata ->> 'run_id' = ANY(%s)
+                )
+                UPDATE checkpoints AS checkpoints_to_update
+                SET parent_checkpoint_id = NULL
+                FROM doomed
+                WHERE checkpoints_to_update.thread_id = doomed.thread_id
+                  AND checkpoints_to_update.checkpoint_ns = doomed.checkpoint_ns
+                  AND checkpoints_to_update.parent_checkpoint_id = doomed.checkpoint_id
+                ''',
+                (list(run_ids),),
+            )
+            cur.execute(
+                '''
+                DELETE FROM checkpoint_writes AS writes
+                USING (
+                    SELECT thread_id, checkpoint_ns, checkpoint_id
+                    FROM checkpoints
+                    WHERE metadata ->> 'run_id' = ANY(%s)
+                ) AS doomed
+                WHERE writes.thread_id = doomed.thread_id
+                  AND writes.checkpoint_ns = doomed.checkpoint_ns
+                  AND writes.checkpoint_id = doomed.checkpoint_id
+                ''',
+                (list(run_ids),),
+            )
+            cur.execute(
+                '''
+                DELETE FROM checkpoints AS checkpoints_to_delete
+                USING (
+                    SELECT thread_id, checkpoint_ns, checkpoint_id
+                    FROM checkpoints
+                    WHERE metadata ->> 'run_id' = ANY(%s)
+                ) AS doomed
+                WHERE checkpoints_to_delete.thread_id = doomed.thread_id
+                  AND checkpoints_to_delete.checkpoint_ns = doomed.checkpoint_ns
+                  AND checkpoints_to_delete.checkpoint_id = doomed.checkpoint_id
+                ''',
+                (list(run_ids),),
+            )
+        self._postgres_delete_orphan_blobs(None)
+
+    def _postgres_prune_keep_latest(self, thread_ids: Sequence[str]) -> None:
+        if not thread_ids:
+            return
+        with self._inner._cursor(pipeline=True) as cur:
+            cur.execute(
+                '''
+                WITH ranked AS (
+                    SELECT
+                        thread_id,
+                        checkpoint_ns,
+                        checkpoint_id,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY thread_id, checkpoint_ns
+                            ORDER BY checkpoint_id DESC
+                        ) AS row_num
+                    FROM checkpoints
+                    WHERE thread_id = ANY(%s)
+                )
+                UPDATE checkpoints AS checkpoints_to_update
+                SET parent_checkpoint_id = NULL
+                FROM ranked
+                WHERE checkpoints_to_update.thread_id = ranked.thread_id
+                  AND checkpoints_to_update.checkpoint_ns = ranked.checkpoint_ns
+                  AND checkpoints_to_update.checkpoint_id = ranked.checkpoint_id
+                  AND ranked.row_num = 1
+                ''',
+                (list(thread_ids),),
+            )
+            cur.execute(
+                '''
+                WITH ranked AS (
+                    SELECT
+                        thread_id,
+                        checkpoint_ns,
+                        checkpoint_id,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY thread_id, checkpoint_ns
+                            ORDER BY checkpoint_id DESC
+                        ) AS row_num
+                    FROM checkpoints
+                    WHERE thread_id = ANY(%s)
+                )
+                DELETE FROM checkpoint_writes AS writes
+                USING ranked
+                WHERE writes.thread_id = ranked.thread_id
+                  AND writes.checkpoint_ns = ranked.checkpoint_ns
+                  AND writes.checkpoint_id = ranked.checkpoint_id
+                  AND ranked.row_num > 1
+                ''',
+                (list(thread_ids),),
+            )
+            cur.execute(
+                '''
+                WITH ranked AS (
+                    SELECT
+                        thread_id,
+                        checkpoint_ns,
+                        checkpoint_id,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY thread_id, checkpoint_ns
+                            ORDER BY checkpoint_id DESC
+                        ) AS row_num
+                    FROM checkpoints
+                    WHERE thread_id = ANY(%s)
+                )
+                DELETE FROM checkpoints AS checkpoints_to_delete
+                USING ranked
+                WHERE checkpoints_to_delete.thread_id = ranked.thread_id
+                  AND checkpoints_to_delete.checkpoint_ns = ranked.checkpoint_ns
+                  AND checkpoints_to_delete.checkpoint_id = ranked.checkpoint_id
+                  AND ranked.row_num > 1
+                ''',
+                (list(thread_ids),),
+            )
+        self._postgres_delete_orphan_blobs(list(thread_ids))
+
+    def _postgres_delete_orphan_blobs(self, thread_ids: Sequence[str] | None) -> None:
+        with self._inner._cursor(pipeline=True) as cur:
+            if thread_ids:
+                cur.execute(
+                    '''
+                    DELETE FROM checkpoint_blobs AS blobs
+                    WHERE blobs.thread_id = ANY(%s)
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM checkpoints
+                          WHERE checkpoints.thread_id = blobs.thread_id
+                            AND checkpoints.checkpoint_ns = blobs.checkpoint_ns
+                            AND checkpoints.checkpoint -> 'channel_versions' ->> blobs.channel = blobs.version
+                      )
+                    ''',
+                    (list(thread_ids),),
+                )
+                return
+            cur.execute(
+                '''
+                DELETE FROM checkpoint_blobs AS blobs
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM checkpoints
+                    WHERE checkpoints.thread_id = blobs.thread_id
+                      AND checkpoints.checkpoint_ns = blobs.checkpoint_ns
+                      AND checkpoints.checkpoint -> 'channel_versions' ->> blobs.channel = blobs.version
+                )
+                '''
+            )
+
