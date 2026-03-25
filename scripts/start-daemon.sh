@@ -4,7 +4,7 @@
 #
 # Usage: ./scripts/start-daemon.sh
 
-set -e
+set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
@@ -20,6 +20,26 @@ GATEWAY_PORT="${DEER_FLOW_GATEWAY_PORT:-8001}"
 FRONTEND_PORT="${DEER_FLOW_FRONTEND_PORT:-3001}"
 NGINX_PORT="${DEER_FLOW_NGINX_PORT:-2026}"
 BACKEND_RUNNER="$REPO_ROOT/backend/scripts/run-module.sh"
+LANGGRAPH_RUNNER="$REPO_ROOT/backend/scripts/run-langgraph.sh"
+
+check_service() {
+    local name="$1"
+    local url="$2"
+    local timeout="$3"
+    local log_file="$4"
+
+    if "$REPO_ROOT/scripts/wait-for-http.sh" "$url" "$timeout" "$name"; then
+        echo "[ok] $name healthy: $url"
+        return 0
+    fi
+
+    echo "[fail] $name failed health check: $url"
+    if [ -f "$log_file" ]; then
+        echo "   log: $log_file"
+        tail -40 "$log_file"
+    fi
+    return 1
+}
 
 echo "=========================================="
 echo "  Starting DeerFlow in Daemon Mode"
@@ -29,32 +49,29 @@ echo ""
 ./scripts/stop-services.sh
 
 if [ ! -x "$BACKEND_RUNNER" ]; then
-    echo "✗ Backend runner not found: $BACKEND_RUNNER"
+    echo "[fail] Backend runner not found: $BACKEND_RUNNER"
+    exit 1
+fi
+if [ ! -x "$LANGGRAPH_RUNNER" ]; then
+    echo "[fail] LangGraph runner not found: $LANGGRAPH_RUNNER"
     exit 1
 fi
 
-# Start backend (LangGraph API)
 echo "Starting backend (LangGraph API)..."
 cd "$REPO_ROOT/backend"
-setsid bash -lc "cd '$REPO_ROOT/backend' && exec '$BACKEND_RUNNER' langgraph dev --host 0.0.0.0 --port $LANGGRAPH_PORT --no-browser --allow-blocking" \
+setsid bash -lc "cd '$REPO_ROOT/backend' && exec '$LANGGRAPH_RUNNER' prod --host 0.0.0.0 --port $LANGGRAPH_PORT" \
     > "$LOG_DIR/backend.log" 2>&1 < /dev/null &
 BACKEND_PID=$!
 echo $BACKEND_PID > "$PID_DIR/backend.pid"
 echo "  Backend PID: $BACKEND_PID"
 
-# Wait for backend to start
-sleep 3
-
-# Start Gateway
 echo "Starting Gateway..."
-cd "$REPO_ROOT/backend"
 setsid bash -lc "cd '$REPO_ROOT/backend' && exec '$BACKEND_RUNNER' uvicorn app.gateway.app:app --host 0.0.0.0 --port $GATEWAY_PORT" \
     > "$LOG_DIR/gateway.log" 2>&1 < /dev/null &
 GATEWAY_PID=$!
 echo $GATEWAY_PID > "$PID_DIR/gateway.pid"
 echo "  Gateway PID: $GATEWAY_PID"
 
-# Start frontend
 echo "Starting frontend..."
 cd "$REPO_ROOT/frontend"
 if [ ! -e "$REPO_ROOT/node_modules" ]; then
@@ -76,57 +93,30 @@ FRONTEND_PID=$!
 echo $FRONTEND_PID > "$PID_DIR/frontend.pid"
 echo "  Frontend PID: $FRONTEND_PID"
 
-# Start nginx
 echo "Starting nginx..."
 nginx -c "$REPO_ROOT/docker/nginx/nginx.local.conf" -p "$REPO_ROOT"
 echo "  nginx started"
 
-# Wait for services to be ready
 echo ""
 echo "Waiting for services to be ready..."
-sleep 5
 
-# Check status
 echo ""
 echo "=========================================="
 echo "  DeerFlow Daemon Status"
 echo "=========================================="
 echo ""
 
-if ps -p $BACKEND_PID > /dev/null; then
-    echo "✅ Backend:     Running (PID: $BACKEND_PID)"
-else
-    echo "❌ Backend:     Failed"
-fi
+FAILURES=0
 
-if ps -p $GATEWAY_PID > /dev/null; then
-    echo "✅ Gateway:     Running (PID: $GATEWAY_PID)"
-else
-    echo "❌ Gateway:     Failed"
-fi
+check_service "LangGraph" "http://127.0.0.1:${LANGGRAPH_PORT}/docs" 90 "$LOG_DIR/backend.log" || FAILURES=1
+check_service "Gateway" "http://127.0.0.1:${GATEWAY_PORT}/health" 60 "$LOG_DIR/gateway.log" || FAILURES=1
+check_service "Frontend" "http://127.0.0.1:${FRONTEND_PORT}/" 120 "$LOG_DIR/frontend.log" || FAILURES=1
+check_service "nginx" "http://127.0.0.1:${NGINX_PORT}/health" 30 "$LOG_DIR/nginx.log" || FAILURES=1
 
-if ./scripts/wait-for-http.sh "http://127.0.0.1:${LANGGRAPH_PORT}/docs" 30 "LangGraph" >/dev/null 2>&1; then
-    echo "✅ LangGraph:   Healthy (port $LANGGRAPH_PORT)"
-else
-    echo "❌ LangGraph:   Failed health check"
-fi
-
-if ./scripts/wait-for-http.sh "http://127.0.0.1:${GATEWAY_PORT}/health" 30 "Gateway" >/dev/null 2>&1; then
-    echo "✅ Gateway API: Healthy (port $GATEWAY_PORT)"
-else
-    echo "❌ Gateway API: Failed health check"
-fi
-
-if ./scripts/wait-for-http.sh "http://127.0.0.1:${FRONTEND_PORT}/" 30 "Frontend" >/dev/null 2>&1; then
-    echo "✅ Frontend:    Healthy (port $FRONTEND_PORT)"
-else
-    echo "❌ Frontend:    Failed"
-fi
-
-if ./scripts/wait-for-http.sh "http://127.0.0.1:${NGINX_PORT}/health" 15 "Nginx" >/dev/null 2>&1; then
-    echo "✅ nginx:       Healthy (port $NGINX_PORT)"
-else
-    echo "❌ nginx:       Failed"
+if [ "$FAILURES" -ne 0 ]; then
+    echo ""
+    echo "Daemon startup failed. See logs in $LOG_DIR/"
+    exit 1
 fi
 
 echo ""

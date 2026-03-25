@@ -36,7 +36,7 @@ PY
 while ! check_http; do
     if [ "$elapsed" -ge "$TIMEOUT" ]; then
         echo ""
-        echo "✗ $SERVICE failed health check at $URL after ${TIMEOUT}s"
+        echo "? $SERVICE failed health check at $URL after ${TIMEOUT}s"
         exit 1
     fi
     printf "\r  Waiting for %s health check... %ds" "$SERVICE" "$elapsed"
@@ -45,3 +45,4 @@ while ! check_http; do
 done
 
 printf "\r  %-60s\r" ""
+exit 0
