@@ -27,6 +27,7 @@ services:
       - ${DEER_FLOW_CONFIG_PATH:-/root/deerflow/runtime/fork/config.production.yaml}:/app/config.yaml:ro
       - ${DEER_FLOW_EXTENSIONS_CONFIG_PATH:-/root/deerflow/runtime/fork/extensions_config.production.json}:/app/extensions_config.json:ro
       - ${DEER_FLOW_HOME:-/root/deerflow/runtime/fork/backend/.deer-flow}:/app/backend/.deer-flow
+      - ${DEER_FLOW_REPO_ROOT:-/root/deerflow/runtime/fork}:/workspace/deerflow:ro
       - ../skills:/app/skills:ro
       - ../backend/.langgraph_api:/app/backend/.langgraph_api
       - ${DEER_FLOW_DOCKER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
@@ -50,6 +51,7 @@ services:
       DEER_FLOW_EXTENSIONS_CONFIG_PATH: /app/extensions_config.json
       DEER_FLOW_HOST_BASE_DIR: /app/backend/.deer-flow
       DEER_FLOW_HOST_SKILLS_PATH: ${DEER_FLOW_REPO_ROOT:-/root/deerflow/runtime/fork}/skills
+      DEER_FLOW_CONTAINER_REPO_ROOT: /workspace/deerflow
       DEER_FLOW_SANDBOX_HOST: host.docker.internal
       DEER_FLOW_RUNTIME_MODE: prod-requested-dev-no-reload
       DEER_FLOW_LANGGRAPH_READY_URL: http://127.0.0.1:2024/docs
@@ -81,6 +83,7 @@ services:
     volumes:
       - ${DEER_FLOW_CONFIG_PATH:-/root/deerflow/runtime/fork/config.production.yaml}:/app/backend/config.yaml:ro
       - ${DEER_FLOW_EXTENSIONS_CONFIG_PATH:-/root/deerflow/runtime/fork/extensions_config.production.json}:/app/backend/extensions_config.json:ro
+      - ${DEER_FLOW_REPO_ROOT:-/root/deerflow/runtime/fork}:/workspace/deerflow:ro
       - ../skills:/app/skills:ro
       - ${DEER_FLOW_HOME:-/root/deerflow/runtime/fork/backend/.deer-flow}:/app/backend/.deer-flow
       - ${DEER_FLOW_DOCKER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
@@ -102,6 +105,7 @@ services:
       DEER_FLOW_HOME: /app/backend/.deer-flow
       DEER_FLOW_HOST_BASE_DIR: /app/backend/.deer-flow
       DEER_FLOW_HOST_SKILLS_PATH: ${DEER_FLOW_REPO_ROOT:-/root/deerflow/runtime/fork}/skills
+      DEER_FLOW_CONTAINER_REPO_ROOT: /workspace/deerflow
       DEER_FLOW_SANDBOX_HOST: host.docker.internal
       DEER_FLOW_RUNTIME_MODE: compose-production
       DEER_FLOW_CHANNEL_SERVICE_MODE: external
@@ -135,6 +139,7 @@ services:
     volumes:
       - ${DEER_FLOW_CONFIG_PATH:-/root/deerflow/runtime/fork/config.production.yaml}:/app/backend/config.yaml:ro
       - ${DEER_FLOW_EXTENSIONS_CONFIG_PATH:-/root/deerflow/runtime/fork/extensions_config.production.json}:/app/backend/extensions_config.json:ro
+      - ${DEER_FLOW_REPO_ROOT:-/root/deerflow/runtime/fork}:/workspace/deerflow:ro
       - ../skills:/app/skills:ro
       - ${DEER_FLOW_HOME:-/root/deerflow/runtime/fork/backend/.deer-flow}:/app/backend/.deer-flow
       - ${DEER_FLOW_DOCKER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
@@ -156,10 +161,11 @@ services:
       DEER_FLOW_HOME: /app/backend/.deer-flow
       DEER_FLOW_HOST_BASE_DIR: /app/backend/.deer-flow
       DEER_FLOW_HOST_SKILLS_PATH: ${DEER_FLOW_REPO_ROOT:-/root/deerflow/runtime/fork}/skills
+      DEER_FLOW_CONTAINER_REPO_ROOT: /workspace/deerflow
       DEER_FLOW_SANDBOX_HOST: host.docker.internal
       DEER_FLOW_RUNTIME_MODE: compose-production-channel-worker
       DEER_FLOW_CONFIG_PATH: /app/backend/config.yaml
-      DEER_FLOW_CHANNEL_NAMES: feishu
+      DEER_FLOW_CHANNEL_NAMES: feishu,weixin
     env_file:
       - ../.env.production
     depends_on:

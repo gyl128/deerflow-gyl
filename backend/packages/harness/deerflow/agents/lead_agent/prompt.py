@@ -1,4 +1,6 @@
+import os
 from datetime import datetime
+from pathlib import Path
 
 from deerflow.config.agents_config import load_agent_soul
 from deerflow.skills import load_skills
@@ -159,13 +161,18 @@ You are {agent_name}, an open-source super agent.
 <thinking_style>
 - Think concisely and strategically about the user's request BEFORE taking action
 - Break down the task: What is clear? What is ambiguous? What is missing?
-- **PRIORITY CHECK: If anything is unclear, missing, or has multiple interpretations, you MUST ask for clarification FIRST - do NOT proceed with work**
+- **PRIORITY CHECK: For questions about the current project, config, runtime, logs, deployment, or token usage, search the mounted repo and local runtime first before asking the user for paths**
 {subagent_thinking}- Never write down your full final answer or report in thinking process, but only outline
 - CRITICAL: After thinking, you MUST provide your actual response to the user. Thinking is for planning, the response is for delivery.
 - Your response must contain the actual answer, not just a reference to what you thought about
 </thinking_style>
 
 <clarification_system>
+**PROJECT-LOCAL DISCOVERY OVERRIDE**
+- For questions about the current project, local deployment, config, logs, token accounting, runtime behavior, or codebase, inspect the mounted repo and local runtime first
+- Do not ask the user where DeerFlow is installed, where config files are, or where the repo lives until you have searched the mounted repo root and current runtime
+- Report what you found from the repo first, then ask follow-up questions only if a real gap remains
+
 **WORKFLOW PRIORITY: CLARIFY → PLAN → ACT**
 1. **FIRST**: Analyze the request in your thinking - identify what's unclear, missing, or ambiguous
 2. **SECOND**: If clarification is needed, call `ask_clarification` tool IMMEDIATELY - do NOT start working
@@ -200,6 +207,7 @@ You are {agent_name}, an open-source super agent.
    - **REQUIRED ACTION**: Call ask_clarification to get approval
 
 **STRICT ENFORCEMENT:**
+- For project-local questions, inspect the repo and runtime before asking for file paths, install locations, or config locations
 - ❌ DO NOT start working and then ask for clarification mid-execution - clarify FIRST
 - ❌ DO NOT skip clarification for "efficiency" - accuracy matters more than speed
 - ❌ DO NOT make assumptions when information is missing - ALWAYS ask
@@ -241,6 +249,7 @@ You: "Deploying to staging..." [proceed]
 {subagent_section}
 
 <working_directory existed="true">
+- Fixed repo root: `{repo_root}` - Search here first for project code, configuration, compose files, tests, and logs
 - User uploads: `/mnt/user-data/uploads` - Files uploaded by the user (automatically listed in context)
 - User workspace: `/mnt/user-data/workspace` - Working directory for temporary files
 - Output files: `/mnt/user-data/outputs` - Final deliverables must be saved here
@@ -251,6 +260,7 @@ You: "Deploying to staging..." [proceed]
 - For PDF, PPT, Excel, and Word files, converted Markdown versions (*.md) are available alongside originals
 - All temporary work happens in `/mnt/user-data/workspace`
 - Final deliverables must be copied to `/mnt/user-data/outputs` and presented using `present_file` tool
+- For questions about the current deployment, config, token accounting, model routing, or bugs, inspect `{repo_root}` before asking the user for file locations
 </working_directory>
 
 <response_style>
@@ -323,6 +333,8 @@ combined with a FastAPI gateway for REST API access [citation:FastAPI](https://f
 </citations>
 
 <critical_reminders>
+- **Project Questions**: Search the repo and runtime first for current-project questions before asking the user for paths
+- **Fixed Repo Root**: Treat `{repo_root}` as the primary project root for self-discovery
 - **Clarification First**: ALWAYS clarify unclear/missing/ambiguous requirements BEFORE starting work - never assume or guess
 {subagent_reminder}- Skill First: Always load the relevant skill before starting **complex** tasks.
 - Progressive Loading: Load resources incrementally as referenced in skills
@@ -424,6 +436,13 @@ def get_agent_soul(agent_name: str | None) -> str:
     return ""
 
 
+def _get_repo_root() -> str:
+    configured = os.getenv("DEER_FLOW_CONTAINER_REPO_ROOT") or os.getenv("DEER_FLOW_REPO_ROOT")
+    if configured:
+        return configured
+    return str(Path(__file__).resolve().parents[5])
+
+
 def get_deferred_tools_prompt_section() -> str:
     """Generate <available-deferred-tools> block for the system prompt.
 
@@ -488,6 +507,7 @@ def apply_prompt_template(subagent_enabled: bool = False, max_concurrent_subagen
         skills_section=skills_section,
         deferred_tools_section=deferred_tools_section,
         memory_context=memory_context,
+        repo_root=_get_repo_root(),
         subagent_section=subagent_section,
         subagent_reminder=subagent_reminder,
         subagent_thinking=subagent_thinking,

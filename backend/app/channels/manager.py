@@ -47,6 +47,30 @@ def _merge_dicts(*layers: Any) -> dict[str, Any]:
     return merged
 
 
+def _extract_messages_container(result: Any) -> list[Any]:
+    """Normalize LangGraph result payloads to a messages list.
+
+    ``runs.wait`` can return either ``{"messages": [...]}`` or a wrapped state
+    payload such as ``{"values": {"messages": [...]}}``.
+    """
+    if isinstance(result, list):
+        return result
+    if not isinstance(result, Mapping):
+        return []
+
+    messages = result.get("messages")
+    if isinstance(messages, list):
+        return messages
+
+    values = result.get("values")
+    if isinstance(values, Mapping):
+        nested_messages = values.get("messages")
+        if isinstance(nested_messages, list):
+            return nested_messages
+
+    return []
+
+
 def _extract_response_text(result: dict | list) -> str:
     """Extract the last AI message text from a LangGraph runs.wait result.
 
@@ -58,11 +82,8 @@ def _extract_response_text(result: dict | list) -> str:
     - Clarification interrupts (``ask_clarification`` tool messages)
     - AI messages with tool_calls but no text content
     """
-    if isinstance(result, list):
-        messages = result
-    elif isinstance(result, dict):
-        messages = result.get("messages", [])
-    else:
+    messages = _extract_messages_container(result)
+    if not messages:
         return ""
 
     # Walk backwards to find usable response text, but stop at the last
@@ -241,11 +262,8 @@ def _extract_artifacts(result: dict | list) -> list[str]:
     the last human message and collects file paths from ``present_files`` tool
     calls.  This ensures only newly-produced artifacts are returned.
     """
-    if isinstance(result, list):
-        messages = result
-    elif isinstance(result, dict):
-        messages = result.get("messages", [])
-    else:
+    messages = _extract_messages_container(result)
+    if not messages:
         return []
 
     artifacts: list[str] = []
