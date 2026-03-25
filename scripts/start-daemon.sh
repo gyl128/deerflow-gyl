@@ -15,31 +15,29 @@ mkdir -p "$LOG_DIR"
 PID_DIR="$REPO_ROOT/.pid"
 mkdir -p "$PID_DIR"
 
+LANGGRAPH_PORT="${DEER_FLOW_LANGGRAPH_PORT:-2024}"
+GATEWAY_PORT="${DEER_FLOW_GATEWAY_PORT:-8001}"
+FRONTEND_PORT="${DEER_FLOW_FRONTEND_PORT:-3001}"
+NGINX_PORT="${DEER_FLOW_NGINX_PORT:-2026}"
+BACKEND_RUNNER="$REPO_ROOT/backend/scripts/run-module.sh"
+
 echo "=========================================="
 echo "  Starting DeerFlow in Daemon Mode"
 echo "=========================================="
 echo ""
 
-# Stop existing services
-echo "Stopping existing services..."
-pkill -f "langgraph dev" 2>/dev/null || true
-pkill -f "uvicorn app.gateway.app:app" 2>/dev/null || true
-pkill -f "next dev" 2>/dev/null || true
-pkill -f "next build" 2>/dev/null || true
-pkill -f "next start" 2>/dev/null || true
-pkill -f "next-server" 2>/dev/null || true
-pkill -f "pnpm exec next" 2>/dev/null || true
-pkill -f "corepack pnpm" 2>/dev/null || true
-nginx -c "$REPO_ROOT/docker/nginx/nginx.local.conf" -p "$REPO_ROOT" -s quit 2>/dev/null || true
-sleep 1
-pkill -9 nginx 2>/dev/null || true
-./scripts/cleanup-containers.sh deer-flow-sandbox 2>/dev/null || true
+./scripts/stop-services.sh
+
+if [ ! -x "$BACKEND_RUNNER" ]; then
+    echo "✗ Backend runner not found: $BACKEND_RUNNER"
+    exit 1
+fi
 
 # Start backend (LangGraph API)
 echo "Starting backend (LangGraph API)..."
 cd "$REPO_ROOT/backend"
-nohup uv run langgraph dev --host 0.0.0.0 --port 2024 \
-    > "$LOG_DIR/backend.log" 2>&1 &
+setsid bash -lc "cd '$REPO_ROOT/backend' && exec '$BACKEND_RUNNER' langgraph dev --host 0.0.0.0 --port $LANGGRAPH_PORT --no-browser --allow-blocking" \
+    > "$LOG_DIR/backend.log" 2>&1 < /dev/null &
 BACKEND_PID=$!
 echo $BACKEND_PID > "$PID_DIR/backend.pid"
 echo "  Backend PID: $BACKEND_PID"
@@ -50,8 +48,8 @@ sleep 3
 # Start Gateway
 echo "Starting Gateway..."
 cd "$REPO_ROOT/backend"
-nohup uv run uvicorn app.gateway.app:app --host 0.0.0.0 --port 8001 \
-    > "$LOG_DIR/gateway.log" 2>&1 &
+setsid bash -lc "cd '$REPO_ROOT/backend' && exec '$BACKEND_RUNNER' uvicorn app.gateway.app:app --host 0.0.0.0 --port $GATEWAY_PORT" \
+    > "$LOG_DIR/gateway.log" 2>&1 < /dev/null &
 GATEWAY_PID=$!
 echo $GATEWAY_PID > "$PID_DIR/gateway.pid"
 echo "  Gateway PID: $GATEWAY_PID"
@@ -72,7 +70,7 @@ if [ ! -f "$REPO_ROOT/frontend/.next/BUILD_ID" ]; then
     bash -lc "cd '$REPO_ROOT/frontend' && rm -f .next/lock .next/dev/lock 2>/dev/null || true && $FRONTEND_PM exec next build" \
         > "$LOG_DIR/frontend-build.log" 2>&1
 fi
-setsid bash -lc "cd '$REPO_ROOT/frontend' && rm -f .next/lock .next/dev/lock 2>/dev/null || true && exec $FRONTEND_PM exec next start --hostname 0.0.0.0 --port 3001" \
+setsid bash -lc "cd '$REPO_ROOT/frontend' && rm -f .next/lock .next/dev/lock 2>/dev/null || true && exec $FRONTEND_PM exec next start --hostname 0.0.0.0 --port $FRONTEND_PORT" \
     > "$LOG_DIR/frontend.log" 2>&1 < /dev/null &
 FRONTEND_PID=$!
 echo $FRONTEND_PID > "$PID_DIR/frontend.pid"
@@ -107,23 +105,35 @@ else
     echo "❌ Gateway:     Failed"
 fi
 
-if ss -ltn "( sport = :3001 )" | grep -q ":3001"; then
-    echo "✅ Frontend:    Running (port 3001)"
+if ./scripts/wait-for-http.sh "http://127.0.0.1:${LANGGRAPH_PORT}/docs" 30 "LangGraph" >/dev/null 2>&1; then
+    echo "✅ LangGraph:   Healthy (port $LANGGRAPH_PORT)"
+else
+    echo "❌ LangGraph:   Failed health check"
+fi
+
+if ./scripts/wait-for-http.sh "http://127.0.0.1:${GATEWAY_PORT}/health" 30 "Gateway" >/dev/null 2>&1; then
+    echo "✅ Gateway API: Healthy (port $GATEWAY_PORT)"
+else
+    echo "❌ Gateway API: Failed health check"
+fi
+
+if ./scripts/wait-for-http.sh "http://127.0.0.1:${FRONTEND_PORT}/" 30 "Frontend" >/dev/null 2>&1; then
+    echo "✅ Frontend:    Healthy (port $FRONTEND_PORT)"
 else
     echo "❌ Frontend:    Failed"
 fi
 
-if pgrep -x nginx > /dev/null; then
-    echo "✅ nginx:       Running"
+if ./scripts/wait-for-http.sh "http://127.0.0.1:${NGINX_PORT}/health" 15 "Nginx" >/dev/null 2>&1; then
+    echo "✅ nginx:       Healthy (port $NGINX_PORT)"
 else
     echo "❌ nginx:       Failed"
 fi
 
 echo ""
-echo "Access URL: http://localhost:2026"
+echo "Access URL: http://localhost:${NGINX_PORT}"
 echo ""
 echo "Logs: $LOG_DIR/"
 echo "PIDs: $PID_DIR/"
 echo ""
-echo "To stop: make stop  or  ./scripts/stop-daemon.sh"
+echo "To stop: make stop"
 echo "=========================================="

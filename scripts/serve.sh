@@ -9,6 +9,12 @@ set -e
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
+LANGGRAPH_PORT="${DEER_FLOW_LANGGRAPH_PORT:-2024}"
+GATEWAY_PORT="${DEER_FLOW_GATEWAY_PORT:-8001}"
+FRONTEND_PORT="${DEER_FLOW_FRONTEND_PORT:-3001}"
+NGINX_PORT="${DEER_FLOW_NGINX_PORT:-2026}"
+BACKEND_RUNNER="$REPO_ROOT/backend/scripts/run-module.sh"
+
 # ── Argument parsing ─────────────────────────────────────────────────────────
 
 DEV_MODE=true
@@ -21,23 +27,14 @@ for arg in "$@"; do
 done
 
 if $DEV_MODE; then
-    FRONTEND_CMD="pnpm run dev"
+    FRONTEND_CMD="pnpm exec next dev --hostname 0.0.0.0 --port $FRONTEND_PORT --turbo"
 else
-    FRONTEND_CMD="env BETTER_AUTH_SECRET=$(python3 -c 'import secrets; print(secrets.token_hex(16))') pnpm run preview"
+    FRONTEND_CMD="pnpm exec next start --hostname 0.0.0.0 --port $FRONTEND_PORT"
 fi
 
 # ── Stop existing services ────────────────────────────────────────────────────
 
-echo "Stopping existing services if any..."
-pkill -f "langgraph dev" 2>/dev/null || true
-pkill -f "uvicorn app.gateway.app:app" 2>/dev/null || true
-pkill -f "next dev" 2>/dev/null || true
-pkill -f "next-server" 2>/dev/null || true
-nginx -c "$REPO_ROOT/docker/nginx/nginx.local.conf" -p "$REPO_ROOT" -s quit 2>/dev/null || true
-sleep 1
-pkill -9 nginx 2>/dev/null || true
-killall -9 nginx 2>/dev/null || true
-./scripts/cleanup-containers.sh deer-flow-sandbox 2>/dev/null || true
+./scripts/stop-services.sh
 sleep 1
 
 # ── Banner ────────────────────────────────────────────────────────────────────
@@ -88,23 +85,7 @@ cleanup() {
     trap - INT TERM
     echo ""
     echo "Shutting down services..."
-    pkill -f "langgraph dev" 2>/dev/null || true
-    pkill -f "uvicorn app.gateway.app:app" 2>/dev/null || true
-    pkill -f "next dev" 2>/dev/null || true
-    pkill -f "next start" 2>/dev/null || true
-    pkill -f "next-server" 2>/dev/null || true
-    # Kill nginx using the captured PID first (most reliable),
-    # then fall back to pkill/killall for any stray nginx workers.
-    if [ -n "${NGINX_PID:-}" ] && kill -0 "$NGINX_PID" 2>/dev/null; then
-        kill -TERM "$NGINX_PID" 2>/dev/null || true
-        sleep 1
-        kill -9 "$NGINX_PID" 2>/dev/null || true
-    fi
-    pkill -9 nginx 2>/dev/null || true
-    killall -9 nginx 2>/dev/null || true
-    echo "Cleaning up sandbox containers..."
-    ./scripts/cleanup-containers.sh deer-flow-sandbox 2>/dev/null || true
-    echo "✓ All services stopped"
+    ./scripts/stop-services.sh
     exit 0
 }
 trap cleanup INT TERM
@@ -113,17 +94,26 @@ trap cleanup INT TERM
 
 mkdir -p logs
 
+if [ ! -x "$BACKEND_RUNNER" ]; then
+    echo "✗ Backend runner not found: $BACKEND_RUNNER"
+    exit 1
+fi
+
 if $DEV_MODE; then
     LANGGRAPH_EXTRA_FLAGS=""
     GATEWAY_EXTRA_FLAGS="--reload --reload-include='*.yaml' --reload-include='.env'"
 else
     LANGGRAPH_EXTRA_FLAGS="--no-reload"
     GATEWAY_EXTRA_FLAGS=""
+    if [ ! -f "$REPO_ROOT/frontend/.next/BUILD_ID" ]; then
+        echo "Building frontend for production..."
+        (cd frontend && rm -f .next/lock .next/dev/lock 2>/dev/null || true && pnpm exec next build > ../logs/frontend-build.log 2>&1)
+    fi
 fi
 
 echo "Starting LangGraph server..."
-(cd backend && NO_COLOR=1 uv run langgraph dev --no-browser --allow-blocking --host 0.0.0.0 $LANGGRAPH_EXTRA_FLAGS > ../logs/langgraph.log 2>&1) &
-./scripts/wait-for-port.sh 2024 60 "LangGraph" || {
+(cd backend && "$BACKEND_RUNNER" langgraph dev --no-browser --allow-blocking --host 0.0.0.0 --port "$LANGGRAPH_PORT" $LANGGRAPH_EXTRA_FLAGS > ../logs/langgraph.log 2>&1) &
+./scripts/wait-for-port.sh "$LANGGRAPH_PORT" 60 "LangGraph" || {
     echo "  See logs/langgraph.log for details"
     tail -20 logs/langgraph.log
     if grep -qE "config_version|outdated|Environment variable .* not found|KeyError|ValidationError|config\.yaml" logs/langgraph.log 2>/dev/null; then
@@ -132,11 +122,16 @@ echo "Starting LangGraph server..."
     fi
     cleanup
 }
-echo "✓ LangGraph server started on localhost:2024"
+./scripts/wait-for-http.sh "http://127.0.0.1:${LANGGRAPH_PORT}/docs" 30 "LangGraph" || {
+    echo "  See logs/langgraph.log for details"
+    tail -20 logs/langgraph.log
+    cleanup
+}
+echo "✓ LangGraph server started on localhost:${LANGGRAPH_PORT}"
 
 echo "Starting Gateway API..."
-(cd backend && PYTHONPATH=. uv run uvicorn app.gateway.app:app --host 0.0.0.0 --port 8001 $GATEWAY_EXTRA_FLAGS > ../logs/gateway.log 2>&1) &
-./scripts/wait-for-port.sh 8001 30 "Gateway API" || {
+(cd backend && "$BACKEND_RUNNER" uvicorn app.gateway.app:app --host 0.0.0.0 --port "$GATEWAY_PORT" $GATEWAY_EXTRA_FLAGS > ../logs/gateway.log 2>&1) &
+./scripts/wait-for-port.sh "$GATEWAY_PORT" 30 "Gateway API" || {
     echo "✗ Gateway API failed to start. Last log output:"
     tail -60 logs/gateway.log
     echo ""
@@ -146,26 +141,41 @@ echo "Starting Gateway API..."
     echo "  Hint: Try running 'make config-upgrade' to update your config.yaml with the latest fields."
     cleanup
 }
-echo "✓ Gateway API started on localhost:8001"
+./scripts/wait-for-http.sh "http://127.0.0.1:${GATEWAY_PORT}/health" 30 "Gateway API" || {
+    echo "✗ Gateway API failed health check. Last log output:"
+    tail -60 logs/gateway.log
+    cleanup
+}
+echo "✓ Gateway API started on localhost:${GATEWAY_PORT}"
 
 echo "Starting Frontend..."
-(cd frontend && $FRONTEND_CMD > ../logs/frontend.log 2>&1) &
-./scripts/wait-for-port.sh 3000 120 "Frontend" || {
+(cd frontend && rm -f .next/lock .next/dev/lock 2>/dev/null || true && $FRONTEND_CMD > ../logs/frontend.log 2>&1) &
+./scripts/wait-for-port.sh "$FRONTEND_PORT" 120 "Frontend" || {
     echo "  See logs/frontend.log for details"
     tail -20 logs/frontend.log
     cleanup
 }
-echo "✓ Frontend started on localhost:3000"
+./scripts/wait-for-http.sh "http://127.0.0.1:${FRONTEND_PORT}/" 30 "Frontend" || {
+    echo "  See logs/frontend.log for details"
+    tail -20 logs/frontend.log
+    cleanup
+}
+echo "✓ Frontend started on localhost:${FRONTEND_PORT}"
 
 echo "Starting Nginx reverse proxy..."
 nginx -g 'daemon off;' -c "$REPO_ROOT/docker/nginx/nginx.local.conf" -p "$REPO_ROOT" > logs/nginx.log 2>&1 &
 NGINX_PID=$!
-./scripts/wait-for-port.sh 2026 10 "Nginx" || {
+./scripts/wait-for-port.sh "$NGINX_PORT" 10 "Nginx" || {
     echo "  See logs/nginx.log for details"
     tail -10 logs/nginx.log
     cleanup
 }
-echo "✓ Nginx started on localhost:2026"
+./scripts/wait-for-http.sh "http://127.0.0.1:${NGINX_PORT}/health" 15 "Nginx" || {
+    echo "  See logs/nginx.log for details"
+    tail -10 logs/nginx.log
+    cleanup
+}
+echo "✓ Nginx started on localhost:${NGINX_PORT}"
 
 # ── Ready ─────────────────────────────────────────────────────────────────────
 
@@ -178,9 +188,9 @@ else
 fi
 echo "=========================================="
 echo ""
-echo "  🌐 Application: http://localhost:2026"
-echo "  📡 API Gateway: http://localhost:2026/api/*"
-echo "  🤖 LangGraph:   http://localhost:2026/api/langgraph/*"
+echo "  🌐 Application: http://localhost:${NGINX_PORT}"
+echo "  📡 API Gateway: http://localhost:${NGINX_PORT}/api/*"
+echo "  🤖 LangGraph:   http://localhost:${NGINX_PORT}/api/langgraph/*"
 echo ""
 echo "  📋 Logs:"
 echo "     - LangGraph: logs/langgraph.log"
