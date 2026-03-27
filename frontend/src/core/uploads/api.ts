@@ -2,7 +2,7 @@
  * API functions for file uploads
  */
 
-import { getBackendBaseURL } from "../config";
+import { fetchBackend } from "../backend/fetch";
 
 export interface UploadedFileInfo {
   filename: string;
@@ -52,8 +52,8 @@ export async function uploadFiles(
     formData.append("files", file);
   });
 
-  const response = await fetch(
-    `${getBackendBaseURL()}/api/threads/${threadId}/uploads`,
+  const response = await fetchBackend(
+    `/api/threads/${threadId}/uploads`,
     {
       method: "POST",
       body: formData,
@@ -73,8 +73,8 @@ export async function uploadFiles(
 export async function listUploadedFiles(
   threadId: string,
 ): Promise<ListFilesResponse> {
-  const response = await fetch(
-    `${getBackendBaseURL()}/api/threads/${threadId}/uploads/list`,
+  const response = await fetchBackend(
+    `/api/threads/${threadId}/uploads/list`,
   );
 
   if (!response.ok) {
@@ -93,8 +93,8 @@ export async function deleteUploadedFile(
   threadId: string,
   filename: string,
 ): Promise<{ success: boolean; message: string }> {
-  const response = await fetch(
-    `${getBackendBaseURL()}/api/threads/${threadId}/uploads/${filename}`,
+  const response = await fetchBackend(
+    `/api/threads/${threadId}/uploads/${filename}`,
     {
       method: "DELETE",
     },

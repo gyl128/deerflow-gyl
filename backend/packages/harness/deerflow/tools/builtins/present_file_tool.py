@@ -1,10 +1,9 @@
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 from langchain.tools import InjectedToolCallId, ToolRuntime, tool
 from langchain_core.messages import ToolMessage
 from langgraph.types import Command
-from langgraph.typing import ContextT
 
 from deerflow.agents.thread_state import ThreadState
 from deerflow.config.paths import VIRTUAL_PATH_PREFIX, get_paths
@@ -13,7 +12,7 @@ OUTPUTS_VIRTUAL_PREFIX = f"{VIRTUAL_PATH_PREFIX}/outputs"
 
 
 def _normalize_presented_filepath(
-    runtime: ToolRuntime[ContextT, ThreadState],
+    runtime: ToolRuntime[dict[str, Any], ThreadState],
     filepath: str,
 ) -> str:
     """Normalize a presented file path to the `/mnt/user-data/outputs/*` contract.
@@ -33,7 +32,8 @@ def _normalize_presented_filepath(
     if runtime.state is None:
         raise ValueError("Thread runtime state is not available")
 
-    thread_id = runtime.context.get("thread_id")
+    context = runtime.context or {}
+    thread_id = context.get("thread_id")
     if not thread_id:
         raise ValueError("Thread ID is not available in runtime context")
 
@@ -61,7 +61,7 @@ def _normalize_presented_filepath(
 
 @tool("present_files", parse_docstring=True)
 def present_file_tool(
-    runtime: ToolRuntime[ContextT, ThreadState],
+    runtime: ToolRuntime[dict[str, Any], ThreadState],
     filepaths: list[str],
     tool_call_id: Annotated[str, InjectedToolCallId],
 ) -> Command:

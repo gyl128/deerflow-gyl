@@ -1,0 +1,97 @@
+{
+  "version": 1,
+  "generatedFrom": "scripts/render_integrations.py",
+  "skills": [
+    {
+      "id": "find-skills",
+      "kind": "skill",
+      "display_name": "Find Skills",
+      "description": "Helps the agent discover available skills quickly.",
+      "path": "skills/public/find-skills",
+      "enabled_by_default": true,
+      "compatibility": {
+        "agent_centers": [
+          "deerflow",
+          "openclaw"
+        ]
+      },
+      "targets": {
+        "deerflow": {
+          "skill_path": "skills/public/find-skills"
+        }
+      },
+      "_source": "integrations/registry/skills/find_skills.json"
+    }
+  ],
+  "mcpServers": [
+    {
+      "id": "knowledge-distiller",
+      "kind": "mcp",
+      "display_name": "Knowledge Distiller",
+      "description": "Video knowledge distillation for Bilibili and YouTube.",
+      "enabled_by_default": false,
+      "transport": {
+        "type": "stdio",
+        "command": "python3",
+        "args": [
+          "/root/.openclaw-wsl-track-a/workspace/agents/video-distiller/server.py",
+          "--model",
+          "qwen-pool/coder-model",
+          "--stdio"
+        ],
+        "env": {
+          "BILIBILI_COOKIE_FILE": "/root/.openclaw-wsl-track-a/cookies/bilibili.txt"
+        }
+      },
+      "compatibility": {
+        "agent_centers": [
+          "deerflow",
+          "openclaw"
+        ]
+      },
+      "targets": {
+        "deerflow": {
+          "server_name": "knowledge-distiller"
+        }
+      },
+      "_source": "integrations/registry/mcp/knowledge_distiller.json"
+    }
+  ],
+  "modelGateways": [
+    {
+      "id": "qwenpool",
+      "kind": "model_gateway",
+      "display_name": "QwenPool Gateway",
+      "description": "OpenAI-compatible pooled gateway for qwen.ai profiles with short-queue protection and local SSE synthesis.",
+      "protocol": "openai",
+      "health_url": "http://host.docker.internal:8787/health",
+      "status_url": "http://host.docker.internal:8787/status",
+      "base_url": "http://host.docker.internal:8787/v1",
+      "compatibility": {
+        "agent_centers": [
+          "deerflow",
+          "openclaw"
+        ]
+      },
+      "models": [
+        {
+          "name": "qwen-code",
+          "display_name": "Qwen Coder (Local)",
+          "provider_model": "openai:coder-model",
+          "api_key_env": "QWENPOOL_API_KEY",
+          "api_key_fallback": "sk-dummy",
+          "max_tokens": 4096,
+          "temperature": 0.7,
+          "supports_thinking": true,
+          "supports_vision": false
+        }
+      ],
+      "targets": {
+        "deerflow": {
+          "config_section": "models"
+        }
+      },
+      "_source": "integrations/registry/model_gateways/qwenpool.json"
+    }
+  ]
+}

@@ -1,8 +1,14 @@
 # DeerFlow - Unified Development Environment
 
-.PHONY: help config config-upgrade check install dev dev-daemon start stop up down clean docker-init docker-start docker-stop docker-logs docker-logs-frontend docker-logs-gateway preflight-production smoke-production
+.PHONY: help config config-upgrade check install dev dev-daemon start stop up down clean docker-init docker-start docker-stop docker-logs docker-logs-frontend docker-logs-gateway
 
 PYTHON ?= python
+BASH ?= bash
+
+# Detect OS for Windows compatibility
+ifeq ($(OS),Windows_NT)
+    SHELL := cmd.exe
+endif
 
 help:
 	@echo "DeerFlow Development Commands:"
@@ -18,9 +24,7 @@ help:
 	@echo "  make clean           - Clean up processes and temporary files"
 	@echo ""
 	@echo "Docker Production Commands:"
-	@echo "  make preflight-production - Validate WSL production prerequisites"
 	@echo "  make up              - Build and start production Docker services (localhost:2026)"
-	@echo "  make smoke-production - Run production smoke test against compose stack"
 	@echo "  make down            - Stop and remove production Docker containers"
 	@echo ""
 	@echo "Docker Development Commands:"
@@ -92,11 +96,21 @@ setup-sandbox:
 
 # Start all services in development mode (with hot-reloading)
 dev:
+ifeq ($(OS),Windows_NT)
+	@echo "Detected Windows - using Git Bash..."
+	@$(BASH) ./scripts/serve.sh --dev
+else
 	@./scripts/serve.sh --dev
+endif
 
 # Start all services in production mode (with optimizations)
 start:
+ifeq ($(OS),Windows_NT)
+	@echo "Detected Windows - using Git Bash..."
+	@$(BASH) ./scripts/serve.sh --prod
+else
 	@./scripts/serve.sh --prod
+endif
 
 # Start all services in daemon mode (background)
 dev-daemon:
@@ -104,7 +118,19 @@ dev-daemon:
 
 # Stop all services
 stop:
-	@./scripts/stop-services.sh
+	@echo "Stopping all services..."
+	@-pkill -f "langgraph dev" 2>/dev/null || true
+	@-pkill -f "uvicorn app.gateway.app:app" 2>/dev/null || true
+	@-pkill -f "next dev" 2>/dev/null || true
+	@-pkill -f "next start" 2>/dev/null || true
+	@-pkill -f "next-server" 2>/dev/null || true
+	@-pkill -f "next-server" 2>/dev/null || true
+	@-nginx -c $(PWD)/docker/nginx/nginx.local.conf -p $(PWD) -s quit 2>/dev/null || true
+	@sleep 1
+	@-pkill -9 nginx 2>/dev/null || true
+	@echo "Cleaning up sandbox containers..."
+	@-./scripts/cleanup-containers.sh deer-flow-sandbox 2>/dev/null || true
+	@echo "✓ All services stopped"
 
 # Clean up
 clean: stop
@@ -144,17 +170,9 @@ docker-logs-gateway:
 # Production Docker Commands
 # ==========================================
 
-# Validate production prerequisites
-preflight-production:
-	@./scripts/preflight-production.sh
-
 # Build and start production services
 up:
 	@./scripts/deploy.sh
-
-# Run smoke test against production services
-smoke-production:
-	@./scripts/smoke-production.sh
 
 # Stop and remove production containers
 down:

@@ -9,10 +9,15 @@ services:
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      test:
+        [
+          "CMD-SHELL",
+          "PGPASSWORD=$$POSTGRES_PASSWORD psql -U $$POSTGRES_USER -d $$POSTGRES_DB -Atqc 'select 1' >/dev/null",
+        ]
       interval: 10s
       timeout: 5s
       retries: 10
+      start_period: 15s
     networks:
       - deer-flow
     restart: unless-stopped
@@ -24,10 +29,12 @@ services:
     container_name: deer-flow-langgraph
     command: sh -c "cd /app/backend && ./scripts/run-langgraph.sh prod --host 0.0.0.0 --port 2024"
     volumes:
-      - ${DEER_FLOW_CONFIG_PATH:-/root/deerflow/runtime/fork/config.production.yaml}:/app/config.yaml:ro
-      - ${DEER_FLOW_EXTENSIONS_CONFIG_PATH:-/root/deerflow/runtime/fork/extensions_config.production.json}:/app/extensions_config.json:ro
-      - ${DEER_FLOW_HOME:-/root/deerflow/runtime/fork/backend/.deer-flow}:/app/backend/.deer-flow
-      - ${DEER_FLOW_REPO_ROOT:-/root/deerflow/runtime/fork}:/workspace/deerflow:ro
+      - ../backend/app:/app/backend/app:ro
+      - ../backend/packages:/app/backend/packages:ro
+      - ${DEER_FLOW_CONFIG_PATH:-/root/deerflow/runtime/next/config.production.yaml}:/app/config.yaml:ro
+      - ${DEER_FLOW_EXTENSIONS_CONFIG_PATH:-/root/deerflow/runtime/next/extensions_config.production.json}:/app/extensions_config.json:ro
+      - ${DEER_FLOW_HOME:-/root/deerflow/runtime/next/backend/.deer-flow}:/app/backend/.deer-flow
+      - ${DEER_FLOW_REPO_ROOT:-/root/deerflow/runtime/next}:/workspace/deerflow:ro
       - ../skills:/app/skills:ro
       - ../backend/.langgraph_api:/app/backend/.langgraph_api
       - ${DEER_FLOW_DOCKER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
@@ -50,7 +57,7 @@ services:
       DEER_FLOW_CONFIG_PATH: /app/config.yaml
       DEER_FLOW_EXTENSIONS_CONFIG_PATH: /app/extensions_config.json
       DEER_FLOW_HOST_BASE_DIR: /app/backend/.deer-flow
-      DEER_FLOW_HOST_SKILLS_PATH: ${DEER_FLOW_REPO_ROOT:-/root/deerflow/runtime/fork}/skills
+      DEER_FLOW_HOST_SKILLS_PATH: ${DEER_FLOW_REPO_ROOT:-/root/deerflow/runtime/next}/skills
       DEER_FLOW_CONTAINER_REPO_ROOT: /workspace/deerflow
       DEER_FLOW_SANDBOX_HOST: host.docker.internal
       DEER_FLOW_RUNTIME_MODE: prod-requested-dev-no-reload
@@ -81,11 +88,13 @@ services:
     container_name: deer-flow-gateway
     command: sh -c "cd backend && ./scripts/run-module.sh uvicorn app.gateway.app:app --host 0.0.0.0 --port 8001"
     volumes:
-      - ${DEER_FLOW_CONFIG_PATH:-/root/deerflow/runtime/fork/config.production.yaml}:/app/backend/config.yaml:ro
-      - ${DEER_FLOW_EXTENSIONS_CONFIG_PATH:-/root/deerflow/runtime/fork/extensions_config.production.json}:/app/backend/extensions_config.json:ro
-      - ${DEER_FLOW_REPO_ROOT:-/root/deerflow/runtime/fork}:/workspace/deerflow:ro
+      - ../backend/app:/app/backend/app:ro
+      - ../backend/packages:/app/backend/packages:ro
+      - ${DEER_FLOW_CONFIG_PATH:-/root/deerflow/runtime/next/config.production.yaml}:/app/backend/config.yaml:ro
+      - ${DEER_FLOW_EXTENSIONS_CONFIG_PATH:-/root/deerflow/runtime/next/extensions_config.production.json}:/app/backend/extensions_config.json:ro
+      - ${DEER_FLOW_REPO_ROOT:-/root/deerflow/runtime/next}:/workspace/deerflow:ro
       - ../skills:/app/skills:ro
-      - ${DEER_FLOW_HOME:-/root/deerflow/runtime/fork/backend/.deer-flow}:/app/backend/.deer-flow
+      - ${DEER_FLOW_HOME:-/root/deerflow/runtime/next/backend/.deer-flow}:/app/backend/.deer-flow
       - ${DEER_FLOW_DOCKER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
       - type: bind
         source: ${HOME:?HOME must be set}/.claude
@@ -104,7 +113,7 @@ services:
       CI: "true"
       DEER_FLOW_HOME: /app/backend/.deer-flow
       DEER_FLOW_HOST_BASE_DIR: /app/backend/.deer-flow
-      DEER_FLOW_HOST_SKILLS_PATH: ${DEER_FLOW_REPO_ROOT:-/root/deerflow/runtime/fork}/skills
+      DEER_FLOW_HOST_SKILLS_PATH: ${DEER_FLOW_REPO_ROOT:-/root/deerflow/runtime/next}/skills
       DEER_FLOW_CONTAINER_REPO_ROOT: /workspace/deerflow
       DEER_FLOW_SANDBOX_HOST: host.docker.internal
       DEER_FLOW_RUNTIME_MODE: compose-production
@@ -137,11 +146,13 @@ services:
     container_name: deer-flow-channel-worker
     command: sh -c "cd backend && ./scripts/run-module.sh uvicorn app.channels.worker_app:app --host 0.0.0.0 --port 8010"
     volumes:
-      - ${DEER_FLOW_CONFIG_PATH:-/root/deerflow/runtime/fork/config.production.yaml}:/app/backend/config.yaml:ro
-      - ${DEER_FLOW_EXTENSIONS_CONFIG_PATH:-/root/deerflow/runtime/fork/extensions_config.production.json}:/app/backend/extensions_config.json:ro
-      - ${DEER_FLOW_REPO_ROOT:-/root/deerflow/runtime/fork}:/workspace/deerflow:ro
+      - ../backend/app:/app/backend/app:ro
+      - ../backend/packages:/app/backend/packages:ro
+      - ${DEER_FLOW_CONFIG_PATH:-/root/deerflow/runtime/next/config.production.yaml}:/app/backend/config.yaml:ro
+      - ${DEER_FLOW_EXTENSIONS_CONFIG_PATH:-/root/deerflow/runtime/next/extensions_config.production.json}:/app/backend/extensions_config.json:ro
+      - ${DEER_FLOW_REPO_ROOT:-/root/deerflow/runtime/next}:/workspace/deerflow:ro
       - ../skills:/app/skills:ro
-      - ${DEER_FLOW_HOME:-/root/deerflow/runtime/fork/backend/.deer-flow}:/app/backend/.deer-flow
+      - ${DEER_FLOW_HOME:-/root/deerflow/runtime/next/backend/.deer-flow}:/app/backend/.deer-flow
       - ${DEER_FLOW_DOCKER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
       - type: bind
         source: ${HOME:?HOME must be set}/.claude
@@ -160,7 +171,7 @@ services:
       CI: "true"
       DEER_FLOW_HOME: /app/backend/.deer-flow
       DEER_FLOW_HOST_BASE_DIR: /app/backend/.deer-flow
-      DEER_FLOW_HOST_SKILLS_PATH: ${DEER_FLOW_REPO_ROOT:-/root/deerflow/runtime/fork}/skills
+      DEER_FLOW_HOST_SKILLS_PATH: ${DEER_FLOW_REPO_ROOT:-/root/deerflow/runtime/next}/skills
       DEER_FLOW_CONTAINER_REPO_ROOT: /workspace/deerflow
       DEER_FLOW_SANDBOX_HOST: host.docker.internal
       DEER_FLOW_RUNTIME_MODE: compose-production-channel-worker
@@ -215,6 +226,23 @@ services:
   nginx:
     image: nginx:alpine
     container_name: deer-flow-nginx
+    command:
+      - /bin/sh
+      - -c
+      - |
+        until wget -qO- http://frontend:3000/ >/dev/null 2>&1; do
+          echo "[nginx] waiting for frontend"
+          sleep 2
+        done
+        until wget -qO- http://gateway:8001/ready >/dev/null 2>&1; do
+          echo "[nginx] waiting for gateway"
+          sleep 2
+        done
+        until wget -qO- http://langgraph:2024/docs >/dev/null 2>&1; do
+          echo "[nginx] waiting for langgraph"
+          sleep 2
+        done
+        exec nginx -g 'daemon off;'
     ports:
       - "${PORT:-2026}:2026"
     volumes:

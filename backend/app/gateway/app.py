@@ -48,6 +48,10 @@ def _channel_service_mode() -> str:
     return os.getenv('DEER_FLOW_CHANNEL_SERVICE_MODE', 'embedded')
 
 
+def _external_channel_health_url() -> str:
+    return os.getenv('DEER_FLOW_CHANNEL_WORKER_HEALTH_URL', 'http://channel-worker:8010/health')
+
+
 def _runtime_metadata() -> dict[str, Any]:
     config = get_app_config()
     checkpointer = getattr(config, 'checkpointer', None)
@@ -72,6 +76,43 @@ async def _probe_langgraph() -> tuple[bool, str | None]:
         return False, f'langgraph probe returned {response.status_code}'
     except Exception as exc:
         return False, f'langgraph probe failed: {exc}'
+
+
+async def _resolve_channel_health(
+    app: FastAPI,
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    channel_service_mode = _channel_service_mode()
+    if channel_service_mode != 'external':
+        return app.state.channel_health, None
+
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            response = await client.get(_external_channel_health_url())
+        response.raise_for_status()
+        payload = response.json()
+        worker_status = payload.get('status')
+        channel_health = payload.get('channels')
+        if not isinstance(channel_health, dict):
+            raise ValueError('channel-worker health payload missing channels object')
+        return channel_health, {
+            'ok': worker_status == 'healthy',
+            'error': None if worker_status == 'healthy' else f'channel worker status is {worker_status!r}',
+            'url': _external_channel_health_url(),
+        }
+    except Exception as exc:
+        reason = f'external channel worker probe failed: {exc}'
+        return (
+            {
+                **_default_channel_health(),
+                'status': 'degraded',
+                'reason': reason,
+            },
+            {
+                'ok': False,
+                'error': reason,
+                'url': _external_channel_health_url(),
+            },
+        )
 
 
 @asynccontextmanager
@@ -199,17 +240,22 @@ API Gateway for DeerFlow - A LangGraph-based AI agent backend with sandbox execu
 
     @app.get('/health', tags=['health'])
     async def health_check() -> dict[str, Any]:
+        channel_health, channel_check = await _resolve_channel_health(app)
         return {
             'status': 'healthy',
             'service': 'deer-flow-gateway',
-            'channels': app.state.channel_health,
+            'channels': channel_health,
             'runtime': _runtime_metadata(),
+            'checks': {
+                'channel_worker': channel_check,
+            },
         }
 
     @app.get('/ready', tags=['health'])
     async def ready_check() -> JSONResponse:
         runtime = _runtime_metadata()
         issues: list[str] = []
+        channel_health, channel_check = await _resolve_channel_health(app)
         if not runtime['checkpointer']['configured']:
             issues.append('checkpointer is not configured')
         langgraph_ok, langgraph_error = await _probe_langgraph()
@@ -218,10 +264,11 @@ API Gateway for DeerFlow - A LangGraph-based AI agent backend with sandbox execu
         payload = {
             'status': 'ready' if not issues else 'not_ready',
             'service': 'deer-flow-gateway',
-            'channels': app.state.channel_health,
+            'channels': channel_health,
             'runtime': runtime,
             'checks': {
                 'langgraph': {'ok': langgraph_ok, 'error': langgraph_error},
+                'channel_worker': channel_check,
                 'checkpointer': {
                     'ok': runtime['checkpointer']['configured'],
                     'error': None if runtime['checkpointer']['configured'] else 'checkpointer missing',

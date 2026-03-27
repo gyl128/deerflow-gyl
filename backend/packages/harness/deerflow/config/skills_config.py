@@ -2,8 +2,6 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
-PROJECT_ROOT = Path(__file__).resolve().parents[5]
-
 
 class SkillsConfig(BaseModel):
     """Configuration for skills system"""
@@ -28,8 +26,8 @@ class SkillsConfig(BaseModel):
             # Use configured path (can be absolute or relative)
             path = Path(self.path)
             if not path.is_absolute():
-                # If relative, resolve from project root instead of process cwd
-                path = PROJECT_ROOT / path
+                # If relative, resolve from current working directory
+                path = Path.cwd() / path
             return path.resolve()
         else:
             # Default: ../skills relative to backend directory

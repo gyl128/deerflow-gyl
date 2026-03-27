@@ -4,11 +4,10 @@ import logging
 import time
 import uuid
 from dataclasses import replace
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from langchain.tools import InjectedToolCallId, ToolRuntime, tool
 from langgraph.config import get_stream_writer
-from langgraph.typing import ContextT
 
 from deerflow.agents.lead_agent.prompt import get_skills_prompt_section
 from deerflow.agents.thread_state import ThreadState
@@ -20,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 @tool("task", parse_docstring=True)
 def task_tool(
-    runtime: ToolRuntime[ContextT, ThreadState],
+    runtime: ToolRuntime[dict[str, Any], ThreadState],
     description: str,
     prompt: str,
     subagent_type: Literal["general-purpose", "bash"],
@@ -83,12 +82,16 @@ def task_tool(
     trace_id = None
 
     if runtime is not None:
-        sandbox_state = runtime.state.get("sandbox")
-        thread_data = runtime.state.get("thread_data")
-        thread_id = runtime.context.get("thread_id")
+        state = runtime.state or {}
+        context = runtime.context or {}
+        config_data = runtime.config or {}
+
+        sandbox_state = state.get("sandbox")
+        thread_data = state.get("thread_data")
+        thread_id = context.get("thread_id")
 
         # Try to get parent model from configurable
-        metadata = runtime.config.get("metadata", {})
+        metadata = config_data.get("metadata", {})
         parent_model = metadata.get("model_name")
 
         # Get or generate trace_id for distributed tracing

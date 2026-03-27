@@ -1,0 +1,31 @@
+{
+  "id": "knowledge-distiller",
+  "kind": "mcp",
+  "display_name": "Knowledge Distiller",
+  "description": "Video knowledge distillation for Bilibili and YouTube.",
+  "enabled_by_default": false,
+  "transport": {
+    "type": "stdio",
+    "command": "python3",
+    "args": [
+      "/root/.openclaw-wsl-track-a/workspace/agents/video-distiller/server.py",
+      "--model",
+      "qwen-pool/coder-model",
+      "--stdio"
+    ],
+    "env": {
+      "BILIBILI_COOKIE_FILE": "/root/.openclaw-wsl-track-a/cookies/bilibili.txt"
+    }
+  },
+  "compatibility": {
+    "agent_centers": [
+      "deerflow",
+      "openclaw"
+    ]
+  },
+  "targets": {
+    "deerflow": {
+      "server_name": "knowledge-distiller"
+    }
+  }
+}

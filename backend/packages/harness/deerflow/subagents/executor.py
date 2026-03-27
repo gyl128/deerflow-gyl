@@ -251,7 +251,7 @@ class SubagentExecutor:
                     # Check if this is a new AI message
                     if isinstance(last_message, AIMessage):
                         # Convert message to dict for serialization
-                        message_dict = last_message.model_dump()
+                        message_dict = last_message.model_dump(warnings=False)
                         # Only add if it's not already in the list (avoid duplicates)
                         # Check by comparing message IDs if available, otherwise compare full dict
                         message_id = message_dict.get("id")

@@ -1,0 +1,19 @@
+{
+  "id": "find-skills",
+  "kind": "skill",
+  "display_name": "Find Skills",
+  "description": "Helps the agent discover available skills quickly.",
+  "path": "skills/public/find-skills",
+  "enabled_by_default": true,
+  "compatibility": {
+    "agent_centers": [
+      "deerflow",
+      "openclaw"
+    ]
+  },
+  "targets": {
+    "deerflow": {
+      "skill_path": "skills/public/find-skills"
+    }
+  }
+}

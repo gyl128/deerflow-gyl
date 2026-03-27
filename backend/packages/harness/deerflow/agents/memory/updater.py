@@ -4,7 +4,7 @@ import json
 import logging
 import re
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +17,11 @@ from deerflow.config.paths import get_paths
 from deerflow.models import create_chat_model
 
 logger = logging.getLogger(__name__)
+
+
+def _utc_now_iso() -> str:
+    """Return a timezone-aware UTC timestamp using the existing ``...Z`` format."""
+    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
 
 def _get_memory_file_path(agent_name: str | None = None) -> Path:
@@ -44,7 +49,7 @@ def _create_empty_memory() -> dict[str, Any]:
     """Create an empty memory structure."""
     return {
         "version": "1.0",
-        "lastUpdated": datetime.utcnow().isoformat() + "Z",
+        "lastUpdated": _utc_now_iso(),
         "user": {
             "workContext": {"summary": "", "updatedAt": ""},
             "personalContext": {"summary": "", "updatedAt": ""},
@@ -239,7 +244,7 @@ def _save_memory_to_file(memory_data: dict[str, Any], agent_name: str | None = N
         file_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Update lastUpdated timestamp
-        memory_data["lastUpdated"] = datetime.utcnow().isoformat() + "Z"
+        memory_data["lastUpdated"] = _utc_now_iso()
 
         # Write atomically using temp file
         temp_path = file_path.with_suffix(".tmp")
@@ -364,7 +369,7 @@ class MemoryUpdater:
             Updated memory data.
         """
         config = get_memory_config()
-        now = datetime.utcnow().isoformat() + "Z"
+        now = _utc_now_iso()
 
         # Update user sections
         user_updates = update_data.get("user", {})
@@ -392,14 +397,7 @@ class MemoryUpdater:
             current_memory["facts"] = [f for f in current_memory.get("facts", []) if f.get("id") not in facts_to_remove]
 
         # Add new facts
-        existing_fact_keys = {
-            fact_key
-            for fact_key in (
-                _fact_content_key(fact.get("content"))
-                for fact in current_memory.get("facts", [])
-            )
-            if fact_key is not None
-        }
+        existing_fact_keys = {fact_key for fact_key in (_fact_content_key(fact.get("content")) for fact in current_memory.get("facts", [])) if fact_key is not None}
         new_facts = update_data.get("newFacts", [])
         for fact in new_facts:
             confidence = fact.get("confidence", 0.5)

@@ -1,0 +1,20 @@
+{
+  "mcpServers": {
+    "knowledge-distiller": {
+      "enabled": false,
+      "type": "stdio",
+      "command": "python3",
+      "args": [
+        "/root/.openclaw-wsl-track-a/workspace/agents/video-distiller/server.py",
+        "--model",
+        "qwen-pool/coder-model",
+        "--stdio"
+      ],
+      "env": {
+        "BILIBILI_COOKIE_FILE": "/root/.openclaw-wsl-track-a/cookies/bilibili.txt"
+      },
+      "description": "Video knowledge distillation for Bilibili and YouTube."
+    }
+  },
+  "skills": {}
+}

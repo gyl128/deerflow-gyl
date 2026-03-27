@@ -16,6 +16,7 @@ _CHANNEL_REGISTRY: dict[str, str] = {
     'feishu': 'app.channels.feishu:FeishuChannel',
     'slack': 'app.channels.slack:SlackChannel',
     'telegram': 'app.channels.telegram:TelegramChannel',
+    'weixin': 'app.channels.weixin:WeixinChannel',
 }
 
 
@@ -175,6 +176,11 @@ class ChannelService:
                 'running': running,
                 'error': self._startup_errors.get(name),
             }
+            if running and hasattr(self._channels[name], 'get_status_snapshot'):
+                try:
+                    channels_status[name]['details'] = self._channels[name].get_status_snapshot()
+                except Exception:
+                    logger.exception('Failed to read detailed status for channel %s', name)
         if not self.has_enabled_channels:
             overall = 'disabled'
             reason = 'no IM channels configured'

@@ -1,9 +1,12 @@
 """Core behavior tests for task tool orchestration."""
 
 import importlib
+import warnings
 from enum import Enum
 from types import SimpleNamespace
 from unittest.mock import MagicMock
+
+from langgraph.prebuilt.tool_node import ToolRuntime
 
 from deerflow.subagents.config import SubagentConfig
 
@@ -407,3 +410,27 @@ def test_cleanup_not_called_on_polling_safety_timeout(monkeypatch):
     assert output.startswith("Task polling timed out after 0 minutes")
     # cleanup should NOT be called because the task is still RUNNING
     assert cleanup_calls == []
+
+
+def test_task_tool_args_schema_runtime_context_serializes_without_warning():
+    runtime = ToolRuntime(
+        state={"messages": []},
+        context={"thread_id": "thread-1"},
+        config={},
+        stream_writer=lambda *_args, **_kwargs: None,
+        tool_call_id="tc-1",
+        store=None,
+    )
+    payload = task_tool_module.task_tool.args_schema.model_construct(
+        runtime=runtime,
+        description="run subagent",
+        prompt="inspect project",
+        subagent_type="general-purpose",
+        tool_call_id="tc-1",
+    )
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        dumped = payload.model_dump()
+
+    assert dumped["runtime"]["context"] == {"thread_id": "thread-1"}

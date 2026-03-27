@@ -1,129 +1,139 @@
 #!/usr/bin/env bash
 #
-# start-daemon.sh - Start DeerFlow in daemon mode (background)
+# start-daemon.sh - Start all DeerFlow development services in daemon mode
 #
-# Usage: ./scripts/start-daemon.sh
+# This script starts DeerFlow services in the background without keeping
+# the terminal connection. Logs are written to separate files.
+#
+# Must be run from the repo root directory.
 
-set -euo pipefail
+set -e
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
-LOG_DIR="$REPO_ROOT/logs"
-mkdir -p "$LOG_DIR"
+# ── Stop existing services ────────────────────────────────────────────────────
 
-PID_DIR="$REPO_ROOT/.pid"
-mkdir -p "$PID_DIR"
+echo "Stopping existing services if any..."
+pkill -f "langgraph dev" 2>/dev/null || true
+pkill -f "uvicorn app.gateway.app:app" 2>/dev/null || true
+pkill -f "next dev" 2>/dev/null || true
+nginx -c "$REPO_ROOT/docker/nginx/nginx.local.conf" -p "$REPO_ROOT" -s quit 2>/dev/null || true
+sleep 1
+pkill -9 nginx 2>/dev/null || true
+./scripts/cleanup-containers.sh deer-flow-sandbox 2>/dev/null || true
+sleep 1
 
-LANGGRAPH_PORT="${DEER_FLOW_LANGGRAPH_PORT:-2024}"
-GATEWAY_PORT="${DEER_FLOW_GATEWAY_PORT:-8001}"
-FRONTEND_PORT="${DEER_FLOW_FRONTEND_PORT:-3001}"
-NGINX_PORT="${DEER_FLOW_NGINX_PORT:-2026}"
-BACKEND_RUNNER="$REPO_ROOT/backend/scripts/run-module.sh"
-LANGGRAPH_RUNNER="$REPO_ROOT/backend/scripts/run-langgraph.sh"
+# ── Banner ────────────────────────────────────────────────────────────────────
 
-check_service() {
-    local name="$1"
-    local url="$2"
-    local timeout="$3"
-    local log_file="$4"
+echo ""
+echo "=========================================="
+echo " Starting DeerFlow in Daemon Mode"
+echo "=========================================="
+echo ""
 
-    if "$REPO_ROOT/scripts/wait-for-http.sh" "$url" "$timeout" "$name"; then
-        echo "[ok] $name healthy: $url"
-        return 0
-    fi
+# ── Config check ─────────────────────────────────────────────────────────────
 
-    echo "[fail] $name failed health check: $url"
-    if [ -f "$log_file" ]; then
-        echo "   log: $log_file"
-        tail -40 "$log_file"
-    fi
-    return 1
+if ! { \
+        [ -n "$DEER_FLOW_CONFIG_PATH" ] && [ -f "$DEER_FLOW_CONFIG_PATH" ] || \
+        [ -f backend/config.yaml ] || \
+        [ -f config.yaml ]; \
+    }; then
+    echo "✗ No DeerFlow config file found."
+    echo "  Checked these locations:"
+    echo "    - $DEER_FLOW_CONFIG_PATH (when DEER_FLOW_CONFIG_PATH is set)"
+    echo "    - backend/config.yaml"
+    echo "    - ./config.yaml"
+    echo ""
+    echo "  Run 'make config' from the repo root to generate ./config.yaml, then set required model API keys in .env or your config file."
+    exit 1
+fi
+
+# ── Auto-upgrade config ──────────────────────────────────────────────────
+
+"$REPO_ROOT/scripts/config-upgrade.sh"
+
+# ── Cleanup on failure ───────────────────────────────────────────────────────
+
+cleanup_on_failure() {
+    echo "Failed to start services, cleaning up..."
+    pkill -f "langgraph dev" 2>/dev/null || true
+    pkill -f "uvicorn app.gateway.app:app" 2>/dev/null || true
+    pkill -f "next dev" 2>/dev/null || true
+    nginx -c "$REPO_ROOT/docker/nginx/nginx.local.conf" -p "$REPO_ROOT" -s quit 2>/dev/null || true
+    sleep 1
+    pkill -9 nginx 2>/dev/null || true
+    echo "✓ Cleanup complete"
 }
 
-echo "=========================================="
-echo "  Starting DeerFlow in Daemon Mode"
-echo "=========================================="
-echo ""
+trap cleanup_on_failure INT TERM
 
-./scripts/stop-services.sh
+# ── Start services ────────────────────────────────────────────────────────────
 
-if [ ! -x "$BACKEND_RUNNER" ]; then
-    echo "[fail] Backend runner not found: $BACKEND_RUNNER"
+mkdir -p logs
+
+echo "Starting LangGraph server..."
+nohup sh -c 'cd backend && NO_COLOR=1 uv run langgraph dev --no-browser --allow-blocking --no-reload > ../logs/langgraph.log 2>&1' &
+./scripts/wait-for-port.sh 2024 60 "LangGraph" || {
+    echo "✗ LangGraph failed to start. Last log output:"
+    tail -60 logs/langgraph.log
+    if grep -qE "config_version|outdated|Environment variable .* not found|KeyError|ValidationError|config\.yaml" logs/langgraph.log 2>/dev/null; then
+        echo ""
+        echo "  Hint: This may be a configuration issue. Try running 'make config-upgrade' to update your config.yaml."
+    fi
+    cleanup_on_failure
     exit 1
-fi
-if [ ! -x "$LANGGRAPH_RUNNER" ]; then
-    echo "[fail] LangGraph runner not found: $LANGGRAPH_RUNNER"
-    exit 1
-fi
+}
+echo "✓ LangGraph server started on localhost:2024"
 
-echo "Starting backend (LangGraph API)..."
-cd "$REPO_ROOT/backend"
-setsid bash -lc "cd '$REPO_ROOT/backend' && exec '$LANGGRAPH_RUNNER' prod --host 0.0.0.0 --port $LANGGRAPH_PORT" \
-    > "$LOG_DIR/backend.log" 2>&1 < /dev/null &
-BACKEND_PID=$!
-echo $BACKEND_PID > "$PID_DIR/backend.pid"
-echo "  Backend PID: $BACKEND_PID"
-
-echo "Starting Gateway..."
-setsid bash -lc "cd '$REPO_ROOT/backend' && exec '$BACKEND_RUNNER' uvicorn app.gateway.app:app --host 0.0.0.0 --port $GATEWAY_PORT" \
-    > "$LOG_DIR/gateway.log" 2>&1 < /dev/null &
-GATEWAY_PID=$!
-echo $GATEWAY_PID > "$PID_DIR/gateway.pid"
-echo "  Gateway PID: $GATEWAY_PID"
-
-echo "Starting frontend..."
-cd "$REPO_ROOT/frontend"
-if [ ! -e "$REPO_ROOT/node_modules" ]; then
-    ln -s "$REPO_ROOT/frontend/node_modules" "$REPO_ROOT/node_modules"
-fi
-if command -v pnpm >/dev/null 2>&1; then
-    FRONTEND_PM="pnpm"
-else
-    FRONTEND_PM="corepack pnpm"
-fi
-if [ ! -f "$REPO_ROOT/frontend/.next/BUILD_ID" ]; then
-    echo "  Building frontend for production..."
-    bash -lc "cd '$REPO_ROOT/frontend' && rm -f .next/lock .next/dev/lock 2>/dev/null || true && $FRONTEND_PM exec next build" \
-        > "$LOG_DIR/frontend-build.log" 2>&1
-fi
-setsid bash -lc "cd '$REPO_ROOT/frontend' && rm -f .next/lock .next/dev/lock 2>/dev/null || true && exec $FRONTEND_PM exec next start --hostname 0.0.0.0 --port $FRONTEND_PORT" \
-    > "$LOG_DIR/frontend.log" 2>&1 < /dev/null &
-FRONTEND_PID=$!
-echo $FRONTEND_PID > "$PID_DIR/frontend.pid"
-echo "  Frontend PID: $FRONTEND_PID"
-
-echo "Starting nginx..."
-nginx -c "$REPO_ROOT/docker/nginx/nginx.local.conf" -p "$REPO_ROOT"
-echo "  nginx started"
-
-echo ""
-echo "Waiting for services to be ready..."
-
-echo ""
-echo "=========================================="
-echo "  DeerFlow Daemon Status"
-echo "=========================================="
-echo ""
-
-FAILURES=0
-
-check_service "LangGraph" "http://127.0.0.1:${LANGGRAPH_PORT}/docs" 90 "$LOG_DIR/backend.log" || FAILURES=1
-check_service "Gateway" "http://127.0.0.1:${GATEWAY_PORT}/health" 60 "$LOG_DIR/gateway.log" || FAILURES=1
-check_service "Frontend" "http://127.0.0.1:${FRONTEND_PORT}/" 120 "$LOG_DIR/frontend.log" || FAILURES=1
-check_service "nginx" "http://127.0.0.1:${NGINX_PORT}/health" 30 "$LOG_DIR/nginx.log" || FAILURES=1
-
-if [ "$FAILURES" -ne 0 ]; then
+echo "Starting Gateway API..."
+nohup sh -c 'cd backend && PYTHONPATH=. uv run uvicorn app.gateway.app:app --host 0.0.0.0 --port 8001 > ../logs/gateway.log 2>&1' &
+./scripts/wait-for-port.sh 8001 30 "Gateway API" || {
+    echo "✗ Gateway API failed to start. Last log output:"
+    tail -60 logs/gateway.log
     echo ""
-    echo "Daemon startup failed. See logs in $LOG_DIR/"
+    echo "  Hint: Try running 'make config-upgrade' to update your config.yaml with the latest fields."
+    cleanup_on_failure
     exit 1
-fi
+}
+echo "✓ Gateway API started on localhost:8001"
+
+echo "Starting Frontend..."
+nohup sh -c 'cd frontend && pnpm run dev > ../logs/frontend.log 2>&1' &
+./scripts/wait-for-port.sh 3000 120 "Frontend" || {
+    echo "✗ Frontend failed to start. Last log output:"
+    tail -60 logs/frontend.log
+    cleanup_on_failure
+    exit 1
+}
+echo "✓ Frontend started on localhost:3000"
+
+echo "Starting Nginx reverse proxy..."
+nohup sh -c 'nginx -g "daemon off;" -c "$1/docker/nginx/nginx.local.conf" -p "$1" > logs/nginx.log 2>&1' _ "$REPO_ROOT" &
+./scripts/wait-for-port.sh 2026 10 "Nginx" || {
+    echo "✗ Nginx failed to start. Last log output:"
+    tail -60 logs/nginx.log
+    cleanup_on_failure
+    exit 1
+}
+echo "✓ Nginx started on localhost:2026"
+
+# ── Ready ─────────────────────────────────────────────────────────────────────
 
 echo ""
-echo "Access URL: http://localhost:${NGINX_PORT}"
-echo ""
-echo "Logs: $LOG_DIR/"
-echo "PIDs: $PID_DIR/"
-echo ""
-echo "To stop: make stop"
 echo "=========================================="
+echo " DeerFlow is running in daemon mode!"
+echo "=========================================="
+echo ""
+echo " 🌐 Application: http://localhost:2026"
+echo " 📡 API Gateway: http://localhost:2026/api/*"
+echo " 🤖 LangGraph: http://localhost:2026/api/langgraph/*"
+echo ""
+echo " 📋 Logs:"
+echo " - LangGraph: logs/langgraph.log"
+echo " - Gateway: logs/gateway.log"
+echo " - Frontend: logs/frontend.log"
+echo " - Nginx: logs/nginx.log"
+echo ""
+echo " 🛑 Stop daemon: make stop"
+echo ""

@@ -7,6 +7,7 @@ import base64
 import json
 import logging
 import os
+import re
 import secrets
 import time
 from dataclasses import dataclass
@@ -314,6 +315,34 @@ def is_supported_direct_text_message(message: dict[str, Any]) -> bool:
     return bool(extract_text_from_message(message))
 
 
+def render_weixin_text(text: str) -> str:
+    """Render DeerFlow markdown-ish output into Weixin-friendly plain text."""
+    normalized = text.replace("\r\n", "\n").strip()
+    if not normalized:
+        return ""
+
+    normalized = re.sub(r"```[a-zA-Z0-9_-]*\n", "[code]\n", normalized)
+    normalized = normalized.replace("```", "\n[/code]")
+    normalized = re.sub(r"`([^`]+)`", r"\1", normalized)
+    normalized = re.sub(r"^\s{0,3}#{1,6}\s*", "", normalized, flags=re.MULTILINE)
+    normalized = re.sub(r"^\s*>\s?", "Quote: ", normalized, flags=re.MULTILINE)
+    normalized = re.sub(r"!\[([^\]]*)\]\(([^)]+)\)", r"Image: \2", normalized)
+    normalized = re.sub(r"\[([^\]]+)\]\((https?://[^)]+)\)", r"\1: \2", normalized)
+    normalized = re.sub(r"(?<!\*)\*\*([^*]+)\*\*(?!\*)", r"\1", normalized)
+    normalized = re.sub(r"(?<!_)__([^_]+)__(?!_)", r"\1", normalized)
+    normalized = re.sub(r"(?<!\*)\*([^*\n]+)\*(?!\*)", r"\1", normalized)
+    normalized = re.sub(r"(?<!_)_([^_\n]+)_(?!_)", r"\1", normalized)
+    normalized = re.sub(r"~~([^~]+)~~", r"\1", normalized)
+    normalized = normalized.replace("**", "").replace("__", "").replace("~~", "")
+    normalized = re.sub(r"^\s*#{1,6}(?=\S)", "", normalized, flags=re.MULTILINE)
+    normalized = re.sub(r"(?m)^(\s*)[*+]\s+", r"\1- ", normalized)
+    normalized = re.sub(r"(?<=\s)\*(?=\S)", "", normalized)
+    normalized = re.sub(r"(?<=\S)\*(?=\s)", "", normalized)
+    normalized = re.sub(r"^\s*[-*]\s+", "- ", normalized, flags=re.MULTILINE)
+    normalized = re.sub(r"\n{3,}", "\n\n", normalized)
+    return normalized.strip()
+
+
 class WeixinChannel(Channel):
     """DeerFlow native Weixin channel backed by the Tencent bridge API."""
 
@@ -326,14 +355,14 @@ class WeixinChannel(Channel):
     async def start(self) -> None:
         if self._running:
             return
-        self._running = True
-        self.bus.subscribe_outbound(self._on_outbound)
         self._state.set_last_error(None)
         account = self._state.load_account()
         if account is None:
             logger.warning("[Weixin] channel enabled but not logged in; run scripts/weixin-login.sh first")
             self._state._merge_session({"logged_in": False, "polling": False, "last_error": _default_relogin_hint()})
-            return
+            raise WeixinError(_default_relogin_hint())
+        self._running = True
+        self.bus.subscribe_outbound(self._on_outbound)
         self._state._merge_session({"logged_in": True})
         self._poll_task = asyncio.create_task(self._poll_loop(account))
         logger.info("[Weixin] channel started (account_id=%s)", account.account_id)
@@ -361,10 +390,13 @@ class WeixinChannel(Channel):
         context_token = self._state.get_context_token(msg.chat_id)
         if not context_token:
             raise WeixinError(f"Weixin context token is missing for user {msg.chat_id}")
+        rendered_text = render_weixin_text(msg.text)
+        if not rendered_text:
+            rendered_text = "(No response)"
 
         client = WeixinApiClient(base_url=account.base_url, token=account.token, timeout_ms=int(self.config.get("poll_timeout_ms", DEFAULT_POLL_TIMEOUT_MS)))
         try:
-            await client.send_text_message(to_user_id=msg.chat_id, text=msg.text, context_token=context_token)
+            await client.send_text_message(to_user_id=msg.chat_id, text=rendered_text, context_token=context_token)
             self._state.set_last_error(None)
         except WeixinSessionExpiredError:
             self._state.pause_session()

@@ -148,9 +148,31 @@ def _friendly_run_error_message(result: Any) -> str | None:
         return None
 
     lowered = error.lower()
+    if "jina" in lowered and ("invalid api key" in lowered or "authenticationfailederror" in lowered):
+        return "Webpage fetching is temporarily unavailable because the web fetch tool is not configured correctly. Please try again later or use a request that does not require full-page fetching."
+    if "429" in lowered or "too many requests" in lowered or "rate limit" in lowered:
+        return "The model service is busy right now. Please try again in a moment."
     if "apiconnectionerror" in lowered or "connection error" in lowered:
         return "The model service connection failed while processing your request. Please try again."
     return f"The agent run failed: {error}"
+
+
+def _friendly_exception_message(exc: BaseException, result: Any | None = None) -> str | None:
+    """Best-effort conversion of thrown SDK/runtime errors into user messages."""
+    if result is not None:
+        if state_message := _friendly_run_error_message(result):
+            return state_message
+
+    message = str(exc).strip()
+    if not message:
+        return None
+
+    lowered = message.lower()
+    if "429" in lowered or "too many requests" in lowered or "rate limit" in lowered:
+        return "The model service is busy right now. Please try again in a moment."
+    if "apiconnectionerror" in lowered or "connection error" in lowered:
+        return "The model service connection failed while processing your request. Please try again."
+    return None
 
 
 def _parse_created_at(value: Any) -> datetime | None:
@@ -625,13 +647,36 @@ class ChannelManager:
             return
 
         logger.info("[Manager] invoking runs.wait(thread_id=%s, text=%r)", thread_id, msg.text[:100])
-        result = await client.runs.wait(
-            thread_id,
-            assistant_id,
-            input={"messages": [{"role": "human", "content": msg.text}]},
-            config=run_config,
-            context=run_context,
-        )
+        try:
+            result = await client.runs.wait(
+                thread_id,
+                assistant_id,
+                input={"messages": [{"role": "human", "content": msg.text}]},
+                config=run_config,
+                context=run_context,
+            )
+        except Exception as exc:
+            logger.exception("[Manager] runs.wait failed: thread_id=%s", thread_id)
+
+            state_after_error: dict[str, Any] | None = None
+            try:
+                raw_state = await client.threads.get_state(thread_id)
+                state_after_error = raw_state if isinstance(raw_state, dict) else None
+            except Exception:
+                logger.exception("[Manager] failed to inspect thread state after runs.wait error: thread_id=%s", thread_id)
+
+            if friendly_error := _friendly_exception_message(exc, state_after_error):
+                await self.bus.publish_outbound(
+                    OutboundMessage(
+                        channel_name=msg.channel_name,
+                        chat_id=msg.chat_id,
+                        thread_id=thread_id,
+                        text=friendly_error,
+                        thread_ts=msg.thread_ts,
+                    )
+                )
+                return
+            raise
 
         response_text = _extract_response_text(result)
         artifacts = _extract_artifacts(result)
@@ -740,7 +785,7 @@ class ChannelManager:
                 elif (error_text := _friendly_run_error_message(result)) is not None:
                     response_text = error_text
                 elif stream_error:
-                    response_text = "An error occurred while processing your request. Please try again."
+                    response_text = _friendly_exception_message(stream_error, result) or "An error occurred while processing your request. Please try again."
                 else:
                     response_text = latest_text or "(No response from agent)"
 

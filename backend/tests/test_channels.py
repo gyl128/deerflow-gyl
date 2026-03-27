@@ -374,6 +374,32 @@ class TestExtractResponseText:
 
 
 class TestFriendlyRunErrorMessage:
+    def test_jina_auth_error_becomes_user_friendly_message(self):
+        from app.channels.manager import _friendly_run_error_message
+
+        result = {
+            "tasks": [
+                {
+                    "name": "tools",
+                    "error": "Jina API returned status 401: Invalid API key, please get a new one from https://jina.ai",
+                },
+            ]
+        }
+        assert _friendly_run_error_message(result) == (
+            "Webpage fetching is temporarily unavailable because the web fetch tool is not configured correctly. "
+            "Please try again later or use a request that does not require full-page fetching."
+        )
+
+    def test_rate_limit_error_becomes_busy_message(self):
+        from app.channels.manager import _friendly_run_error_message
+
+        result = {
+            "tasks": [
+                {"name": "model", "error": "HTTP 429 Too Many Requests"},
+            ]
+        }
+        assert _friendly_run_error_message(result) == "The model service is busy right now. Please try again in a moment."
+
     def test_connection_error_becomes_user_friendly_message(self):
         from app.channels.manager import _friendly_run_error_message
 
@@ -559,6 +585,46 @@ class TestChannelManager:
             await manager.stop()
 
             assert outbound_received[0].text == "The model service connection failed while processing your request. Please try again."
+
+        _run(go())
+
+    def test_handle_chat_maps_wait_exception_from_thread_state(self):
+        from app.channels.manager import ChannelManager
+
+        async def go():
+            bus = MessageBus()
+            store = ChannelStore(path=Path(tempfile.mkdtemp()) / "store.json")
+            manager = ChannelManager(bus=bus, store=store)
+
+            mock_client = _make_mock_langgraph_client()
+            mock_client.runs.wait = AsyncMock(side_effect=Exception("An internal error occurred"))
+            mock_client.threads.get_state = AsyncMock(
+                return_value={
+                    "tasks": [
+                        {
+                            "name": "tools",
+                            "error": "Jina API returned status 401: Invalid API key, please get a new one from https://jina.ai",
+                        }
+                    ]
+                }
+            )
+            manager._client = mock_client
+
+            outbound_received = []
+
+            async def capture_outbound(msg):
+                outbound_received.append(msg)
+
+            bus.subscribe_outbound(capture_outbound)
+            await manager.start()
+            await bus.publish_inbound(InboundMessage(channel_name="test", chat_id="chat1", user_id="user1", text="hi"))
+            await _wait_for(lambda: len(outbound_received) >= 1)
+            await manager.stop()
+
+            assert outbound_received[0].text == (
+                "Webpage fetching is temporarily unavailable because the web fetch tool is not configured correctly. "
+                "Please try again later or use a request that does not require full-page fetching."
+            )
 
         _run(go())
 

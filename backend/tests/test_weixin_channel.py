@@ -15,6 +15,7 @@ from app.channels.weixin import (
     extract_text_from_message,
     is_supported_direct_text_message,
     login_via_qr,
+    render_weixin_text,
 )
 
 
@@ -91,6 +92,19 @@ class TestWeixinMessageParsing:
             }
         )
 
+    def test_render_weixin_text_strips_markdown_markers(self):
+        rendered = render_weixin_text(
+            "# Title\n\n**bold** and *italic*\n\n- item\n\n`code`\n\n[link](https://example.com)"
+        )
+        assert "# " not in rendered
+        assert "**" not in rendered
+        assert "*italic*" not in rendered
+        assert "bold and italic" in rendered
+        assert "- item" in rendered
+        assert "code" in rendered
+        assert "link: https://example.com" in rendered
+        assert "*" not in rendered
+
 
 class TestWeixinLogin:
     def test_login_via_qr_saves_account(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
@@ -131,6 +145,18 @@ class TestWeixinLogin:
 
 
 class TestWeixinChannel:
+    def test_start_requires_logged_in_account(self, tmp_path: Path):
+        async def go():
+            bus = MessageBus()
+            channel = WeixinChannel(bus=bus, config={"state_dir": str(tmp_path)})
+            with pytest.raises(WeixinError, match="weixin-login.sh"):
+                await channel.start()
+            assert channel.is_running is False
+            assert channel.get_status_snapshot()["configured"] is False
+            assert channel.get_status_snapshot()["relogin_required"] is True
+
+        _run(go())
+
     def test_handle_inbound_message_publishes_direct_text(self, tmp_path: Path):
         async def go():
             bus = MessageBus()
@@ -184,9 +210,13 @@ class TestWeixinChannel:
                     channel_name="weixin",
                     chat_id="friend@im.wechat",
                     thread_id="t1",
-                    text="reply",
+                    text="**reply**\n\n[doc](https://example.com)",
                 )
             )
-            sent.assert_awaited_once_with(to_user_id="friend@im.wechat", text="reply", context_token="ctx-1")
+            sent.assert_awaited_once_with(
+                to_user_id="friend@im.wechat",
+                text="reply\n\ndoc: https://example.com",
+                context_token="ctx-1",
+            )
 
         _run(go())

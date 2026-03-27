@@ -1,5 +1,7 @@
 # DeerFlow docker image cache
 docker/.cache/
+# oh-my-claudecode state
+.omc/
 # OS generated files
 .DS_Store
 *.local
@@ -20,6 +22,7 @@ venv/
 
 # Environment variables
 .env
+.env.production
 
 # Configuration files
 config.yaml
@@ -52,20 +55,3 @@ web/
 # Deployment artifacts
 backend/Dockerfile.langgraph
 config.yaml.bak
-config.yaml.new
-
-# Runtime state and local daemon files
-.pid/
-backend/.langgraph_api/
-backend/.deer-flow/
-
-# Local integration and migration notes
-CRON_API_TEST_REPORT.md
-CRON_CONFIGURATION.md
-CRON_SETUP_COMPLETE.md
-STARTUP_GUIDE.md
-TELEGRAM_SETUP.md
-VIDEO_DISTILLER_SETUP.md
-WSL2-PROXY-SETUP.md
-ecosystem.config.js
-test-cron-api.sh

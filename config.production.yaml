@@ -9,14 +9,18 @@ models:
   # Using openai: prefix to specify model provide
   - name: qwen-code
     display_name: Qwen Coder (Local)
-    use: langchain_openai:ChatOpenAI
+    use: deerflow.models.patched_openai:QwenPoolChatOpenAI
     model: openai:coder-model
     api_key: sk-dummy
     base_url: http://host.docker.internal:8787/v1
     max_tokens: 4096
     temperature: 0.7
     supports_thinking: true
+    supports_reasoning_effort: true
     supports_vision: false
+    when_thinking_enabled:
+      extra_body:
+        enable_thinking: true
 
 # ============================================================================
 # Tool Groups Configuration
@@ -35,11 +39,6 @@ tools:
     group: web
     use: deerflow.community.tavily.tools:web_search_tool
     max_results: 5
-
-  - name: web_fetch
-    group: web
-    use: deerflow.community.jina_ai.tools:web_fetch_tool
-    timeout: 10
 
   - name: image_search
     group: web
@@ -76,7 +75,7 @@ tool_search:
 # Sandbox Configuration
 # ============================================================================
 sandbox:
-  use: deerflow.sandbox.local:LocalSandboxProvide
+  use: deerflow.sandbox.local:LocalSandboxProvider
 
 # ============================================================================
 # Skills Configuration
@@ -97,7 +96,7 @@ title:
 # Summarization Configuration
 # ============================================================================
 summarization:
-  enabled: false
+  enabled: true
   model_name: qwen-code
   trigger:
     - type: tokens
@@ -143,3 +142,19 @@ channels:
     enabled: true
     app_id: $FEISHU_APP_ID
     app_secret: $FEISHU_APP_SECRET
+
+  weixin:
+    enabled: true
+    base_url: https://ilinkai.weixin.qq.com
+    cdn_base_url: https://novac2c.cdn.weixin.qq.com/c2c
+    poll_timeout_ms: 35000
+    login_timeout_ms: 480000
+    bot_type: "3"
+    session:
+      config:
+        recursion_limit: 40
+      context:
+        thinking_enabled: true
+        is_plan_mode: true
+        subagent_enabled: true
+        reasoning_effort: high

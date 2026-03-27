@@ -14,3 +14,11 @@ def test_prompt_requires_local_search_before_asking_for_paths(monkeypatch):
     prompt = apply_prompt_template()
     assert "PROJECT-LOCAL DISCOVERY OVERRIDE" in prompt
     assert "Do not ask the user where DeerFlow is installed" in prompt
+
+
+def test_prompt_does_not_include_hard_clarification_safety_rules(monkeypatch):
+    monkeypatch.setenv("DEER_FLOW_CONTAINER_REPO_ROOT", "/workspace/deerflow")
+    prompt = apply_prompt_template()
+    assert "MANDATORY Clarification Scenarios" not in prompt
+    assert "Risky Operations" not in prompt
+    assert "DO NOT proceed with guesses" not in prompt

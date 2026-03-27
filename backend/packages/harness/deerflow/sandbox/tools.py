@@ -1,8 +1,8 @@
 import re
 from pathlib import Path
+from typing import Any
 
 from langchain.tools import ToolRuntime, tool
-from langgraph.typing import ContextT
 
 from deerflow.agents.thread_state import ThreadDataState, ThreadState
 from deerflow.config.paths import VIRTUAL_PATH_PREFIX
@@ -106,7 +106,7 @@ def _path_variants(path: str) -> set[str]:
     return {path, path.replace("\\", "/"), path.replace("/", "\\")}
 
 
-def _sanitize_error(error: Exception, runtime: "ToolRuntime[ContextT, ThreadState] | None" = None) -> str:
+def _sanitize_error(error: Exception, runtime: "ToolRuntime[dict[str, Any], ThreadState] | None" = None) -> str:
     """Sanitize an error message to avoid leaking host filesystem paths.
 
     In local-sandbox mode, resolved host paths in the error string are masked
@@ -341,7 +341,7 @@ def replace_virtual_paths_in_command(command: str, thread_data: ThreadDataState 
     return result
 
 
-def get_thread_data(runtime: ToolRuntime[ContextT, ThreadState] | None) -> ThreadDataState | None:
+def get_thread_data(runtime: ToolRuntime[dict[str, Any], ThreadState] | None) -> ThreadDataState | None:
     """Extract thread_data from runtime state."""
     if runtime is None:
         return None
@@ -350,7 +350,19 @@ def get_thread_data(runtime: ToolRuntime[ContextT, ThreadState] | None) -> Threa
     return runtime.state.get("thread_data")
 
 
-def is_local_sandbox(runtime: ToolRuntime[ContextT, ThreadState] | None) -> bool:
+def ensure_runtime_context(runtime: ToolRuntime[dict[str, Any], ThreadState] | None) -> dict[str, Any]:
+    """Return a mutable runtime context mapping, creating one if needed."""
+    if runtime is None:
+        return {}
+
+    context = runtime.context
+    if context is None:
+        context = {}
+        runtime.context = context
+    return context
+
+
+def is_local_sandbox(runtime: ToolRuntime[dict[str, Any], ThreadState] | None) -> bool:
     """Check if the current sandbox is a local sandbox.
 
     Path replacement is only needed for local sandbox since aio sandbox
@@ -366,7 +378,7 @@ def is_local_sandbox(runtime: ToolRuntime[ContextT, ThreadState] | None) -> bool
     return sandbox_state.get("sandbox_id") == "local"
 
 
-def sandbox_from_runtime(runtime: ToolRuntime[ContextT, ThreadState] | None = None) -> Sandbox:
+def sandbox_from_runtime(runtime: ToolRuntime[dict[str, Any], ThreadState] | None = None) -> Sandbox:
     """Extract sandbox instance from tool runtime.
 
     DEPRECATED: Use ensure_sandbox_initialized() for lazy initialization support.
@@ -390,11 +402,12 @@ def sandbox_from_runtime(runtime: ToolRuntime[ContextT, ThreadState] | None = No
     if sandbox is None:
         raise SandboxNotFoundError(f"Sandbox with ID '{sandbox_id}' not found", sandbox_id=sandbox_id)
 
-    runtime.context["sandbox_id"] = sandbox_id  # Ensure sandbox_id is in context for downstream use
+    context = ensure_runtime_context(runtime)
+    context["sandbox_id"] = sandbox_id  # Ensure sandbox_id is in context for downstream use
     return sandbox
 
 
-def ensure_sandbox_initialized(runtime: ToolRuntime[ContextT, ThreadState] | None = None) -> Sandbox:
+def ensure_sandbox_initialized(runtime: ToolRuntime[dict[str, Any], ThreadState] | None = None) -> Sandbox:
     """Ensure sandbox is initialized, acquiring lazily if needed.
 
     On first call, acquires a sandbox from the provider and stores it in runtime state.
@@ -425,12 +438,14 @@ def ensure_sandbox_initialized(runtime: ToolRuntime[ContextT, ThreadState] | Non
         if sandbox_id is not None:
             sandbox = get_sandbox_provider().get(sandbox_id)
             if sandbox is not None:
-                runtime.context["sandbox_id"] = sandbox_id  # Ensure sandbox_id is in context for releasing in after_agent
+                context = ensure_runtime_context(runtime)
+                context["sandbox_id"] = sandbox_id  # Ensure sandbox_id is in context for releasing in after_agent
                 return sandbox
             # Sandbox was released, fall through to acquire new one
 
     # Lazy acquisition: get thread_id and acquire sandbox
-    thread_id = runtime.context.get("thread_id")
+    context = ensure_runtime_context(runtime)
+    thread_id = context.get("thread_id")
     if thread_id is None:
         raise SandboxRuntimeError("Thread ID not available in runtime context")
 
@@ -445,11 +460,11 @@ def ensure_sandbox_initialized(runtime: ToolRuntime[ContextT, ThreadState] | Non
     if sandbox is None:
         raise SandboxNotFoundError("Sandbox not found after acquisition", sandbox_id=sandbox_id)
 
-    runtime.context["sandbox_id"] = sandbox_id  # Ensure sandbox_id is in context for releasing in after_agent
+    context["sandbox_id"] = sandbox_id  # Ensure sandbox_id is in context for releasing in after_agent
     return sandbox
 
 
-def ensure_thread_directories_exist(runtime: ToolRuntime[ContextT, ThreadState] | None) -> None:
+def ensure_thread_directories_exist(runtime: ToolRuntime[dict[str, Any], ThreadState] | None) -> None:
     """Ensure thread data directories (workspace, uploads, outputs) exist.
 
     This function is called lazily when any sandbox tool is first used.
@@ -487,7 +502,7 @@ def ensure_thread_directories_exist(runtime: ToolRuntime[ContextT, ThreadState] 
 
 
 @tool("bash", parse_docstring=True)
-def bash_tool(runtime: ToolRuntime[ContextT, ThreadState], description: str, command: str) -> str:
+def bash_tool(runtime: ToolRuntime[dict[str, Any], ThreadState], description: str, command: str) -> str:
     """Execute a bash command in a Linux environment.
 
 
@@ -518,7 +533,7 @@ def bash_tool(runtime: ToolRuntime[ContextT, ThreadState], description: str, com
 
 
 @tool("ls", parse_docstring=True)
-def ls_tool(runtime: ToolRuntime[ContextT, ThreadState], description: str, path: str) -> str:
+def ls_tool(runtime: ToolRuntime[dict[str, Any], ThreadState], description: str, path: str) -> str:
     """List the contents of a directory up to 2 levels deep in tree format.
 
     Args:
@@ -552,7 +567,7 @@ def ls_tool(runtime: ToolRuntime[ContextT, ThreadState], description: str, path:
 
 @tool("read_file", parse_docstring=True)
 def read_file_tool(
-    runtime: ToolRuntime[ContextT, ThreadState],
+    runtime: ToolRuntime[dict[str, Any], ThreadState],
     description: str,
     path: str,
     start_line: int | None = None,
@@ -597,7 +612,7 @@ def read_file_tool(
 
 @tool("write_file", parse_docstring=True)
 def write_file_tool(
-    runtime: ToolRuntime[ContextT, ThreadState],
+    runtime: ToolRuntime[dict[str, Any], ThreadState],
     description: str,
     path: str,
     content: str,
@@ -634,7 +649,7 @@ def write_file_tool(
 
 @tool("str_replace", parse_docstring=True)
 def str_replace_tool(
-    runtime: ToolRuntime[ContextT, ThreadState],
+    runtime: ToolRuntime[dict[str, Any], ThreadState],
     description: str,
     path: str,
     old_str: str,

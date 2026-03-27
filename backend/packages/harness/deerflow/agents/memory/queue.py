@@ -3,7 +3,7 @@
 import threading
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from deerflow.config.memory_config import get_memory_config
@@ -15,7 +15,7 @@ class ConversationContext:
 
     thread_id: str
     messages: list[Any]
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
     agent_name: str | None = None
 
 
